@@ -2,6 +2,69 @@
 
 ## [Unreleased]
 
+### Added (2026-08-28 — fork: tier comparison harness + GGUF metadata repair)
+
+- **`magicquant compare`** — side-by-side inference comparison across generated
+  tiers, scoring each tier's answers against a fixed question set and reporting
+  per-tier consistency. `magicquant/compare/` holds the CLI (`cmd_compare`), the
+  `llama_cpp.Llama` inference driver (`inference`), reproducibility metadata
+  capture (`metadata`), rendering (`output`), passage loading (`passages`), and
+  answer scoring (`scoring`); `magicquant/data/` ships the passage corpus and
+  `questions.yaml` it scores against. `inference.py` had never been committed on
+  this fork despite `cmd_compare` importing it, so a clean clone could not run
+  the subcommand at all.
+- **`magicquant fix-metadata`** — detects and repairs GGUF metadata that
+  disagrees with actual tensor content (motivating case: `block_count` larger
+  than the real number of block groups, which makes llama.cpp reject an
+  otherwise valid file). `magicquant/gguf/patch.py`, patched in place.
+- (2026-08-28; files: magicquant/compare/* [new], magicquant/data/* [new],
+  magicquant/gguf/patch.py [new], magicquant/__main__.py, pyproject.toml,
+  README.md, tests/compare/* [new]; verified: full suite 1288 passed/39 skipped;
+  `ruff check --select F` clean; `python -m magicquant --help` lists both)
+
+### Fixed (2026-08-28 — Windows portability across measurement and encode paths)
+
+- **Measurement subprocess cleanup could not kill orphaned grandchildren on
+  Windows.** POSIX process groups have no Windows equivalent covering the case
+  the stall cleanup exists for — a child that already exited leaving a grandchild
+  holding the pipe, which `taskkill /T` cannot find because it walks a
+  parent->child tree that is gone. Replaced with a Job Object via
+  ctypes/kernel32: descendants inherit membership and `TerminateJobObject` kills
+  every member regardless of tree state. Capability-detected via `hasattr`, never
+  platform-sniffed, so POSIX behaviour is byte-for-byte unchanged.
+- **`GGUFSource._read_raw_bytes` assumed `os.pread`,** absent on Windows. Falls
+  back to `lseek`+`read` under a per-source lock, which is what makes the
+  two-syscall pair atomic across the encode pool's threads. This surfaced a
+  latent bug on EVERY platform: the unguarded lazy open let N threads each open a
+  handle, and the losers' were garbage-collected — closing an fd while another
+  thread was mid-read on it (EBADF). Now double-checked under the same lock.
+- `ggml_binding` also probes `ggml-base.dll`/`ggml-cpu.dll`; `orchestrator.py`
+  and `v2/search.py` quote the resolved binary as `'{path}'` rather than
+  `{path!r}`, which renders Windows backslashes unreadably; test fakes use `.cmd`
+  shims (a `.sh` is not executable on Windows — WinError 193) and utf-8 is pinned
+  where the default would be cp1252.
+- (2026-08-28; files: magicquant/gguf/source.py, magicquant/utils/llamacpp.py,
+  magicquant/quant/ggml_binding.py, magicquant/orchestrator.py,
+  magicquant/v2/search.py, tests/test_calib_corpus_quality.py,
+  tests/test_measurement_pipe_stall.py, tests/test_qat_validate.py,
+  tests/test_writer_parallel_encode.py; verified: full suite 1288 passed/39
+  skipped on Linux; `ruff check --select F` clean; every touched file compiles
+  under Python 3.10, the CI matrix floor)
+
+### Changed (2026-08-28 — line endings pinned to LF)
+
+- **`.gitattributes` (new): `* text=auto eol=lf`** plus explicit `binary` for
+  png/npy/gguf/safetensors. This tree was reconciled with upstream on a Windows
+  box and copied back, returning every text file as CRLF and setting the exec bit
+  on 228 of 235 files — 54 files read as rewritten when none had changed. The
+  binary markers are load-bearing: the tracked screenshot contains raw CR bytes
+  a blind conversion would corrupt.
+- `.gitignore`: added `bin/llama.cpp/` and `docs/superpowers/`; the latter is
+  also removed from the repo.
+- (2026-08-28; files: .gitattributes [new], .gitignore, docs/superpowers/*
+  [removed]; verified: 0 CRLF files, 0 non-644 modes; content confirmed
+  byte-identical pre/post conversion except CRLF->LF)
+
 ### Fixed (2026-08-20 — metadata array signedness lost on every K-quant hybrid render)
 
 - **Every standard MagicQuant K-quant hybrid render wrote
