@@ -7,6 +7,8 @@ Usage:
     magicquant search <model.gguf>         Run evolutionary search
     magicquant hybrid <config.yaml>        Generate hybrid GGUF from YAML config
     magicquant generate <model.gguf>       Generate hybrid GGUFs from search results
+    magicquant compare                     Side-by-side inference comparison across tiers
+    magicquant fix-metadata <model.gguf>   Fix GGUF metadata mismatches in-place
 """
 
 import argparse
@@ -725,6 +727,65 @@ def cmd_dry_run(args: argparse.Namespace) -> None:
     print("Dry run passed. Configuration is valid.")
 
 
+def cmd_fix_metadata(args: argparse.Namespace) -> None:
+    """Detect and fix GGUF metadata mismatches (e.g. block_count > actual blocks)."""
+    from magicquant.gguf.patch import detect_block_count_mismatch, patch_gguf_metadata_inplace
+
+    log = get_logger("fix_metadata")
+
+    model_path = args.model
+    if not Path(model_path).is_file():
+        log.error("File not found", path=model_path)
+        sys.exit(1)
+
+    print(f"Scanning: {model_path}")
+    info = detect_block_count_mismatch(model_path)
+
+    if not info.get("needs_patch"):
+        reason = info.get("reason", "metadata is consistent with tensors")
+        print(f"No fix needed: {reason}")
+        if "meta_block_count" in info:
+            print(
+                f"  {info['block_count_key']} = {info['meta_block_count']}  "
+                f"(actual blocks: {info['actual_block_count']})"
+            )
+        return
+
+    print(
+        f"\n  {info['block_count_key']}: {info['meta_block_count']} "
+        f"(but only {info['actual_block_count']} block groups exist in the file)"
+    )
+    if info["meta_nextn"]:
+        print(f"  {info['nextn_key']}: {info['meta_nextn']} (nextn tensors are absent)")
+
+    patches = info["suggested_patches"]
+    print(f"\nProposed patches: {patches}")
+
+    if args.dry_run:
+        print("\n-- DRY RUN: no file will be modified --")
+        patch_gguf_metadata_inplace(model_path, patches, dry_run=True, verbose=True)
+        return
+
+    if not args.yes:
+        answer = input("\nPatch the file in-place? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("Aborted.")
+            return
+
+    changed = patch_gguf_metadata_inplace(model_path, patches, dry_run=False, verbose=True)
+    if changed:
+        print(f"\nPatched {len(changed)} key(s). Original file modified in-place.")
+        log.info("Metadata patched", file=model_path, changes={k: v[1] for k, v in changed.items()})
+    else:
+        print("Nothing changed.")
+
+
+def _cmd_compare(args: argparse.Namespace) -> None:
+    """Dispatch to compare module."""
+    from magicquant.compare import cmd_compare
+    cmd_compare(args)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="magicquant",
@@ -1236,6 +1297,103 @@ def main() -> None:
         "--repo", help="Target HF repo id (owner/name) for --upload",
     )
     card_parser.set_defaults(func=cmd_card)
+
+    # ── compare ───────────────────────────────────────────────────────────────
+    compare_parser = subparsers.add_parser(
+        "compare",
+        help="Run side-by-side inference comparison across GGUF tiers",
+    )
+    compare_parser.add_argument(
+        "--output-dir",
+        default="./output",
+        help="Directory containing GGUFs to compare and where results are written (default: ./output)",
+    )
+    compare_parser.add_argument(
+        "--questions-file",
+        default=None,
+        help="Path to YAML question pool (default: bundled questions.yaml)",
+    )
+    compare_parser.add_argument(
+        "--question-count",
+        type=int,
+        default=20,
+        help="Number of questions to use, sampled across easy/medium/hard tiers (default: 20)",
+    )
+    compare_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=6000,
+        help="Maximum tokens to generate per response (default: 6000). Thinking models that emit <think> blocks need 4000–8000: the chain-of-thought alone can consume 1000–3000 tokens before the final answer is written.",
+    )
+    compare_parser.add_argument(
+        "--context-size",
+        type=int,
+        default=8192,
+        help="Context window size (default: 8192). Auto-expanded when passage-based questions need more. Must exceed max-tokens plus prompt length — with a 6000-token budget, values below 8192 can silently truncate thinking models.",
+    )
+    compare_parser.add_argument(
+        "--llamacpp-path",
+        help="Path to llama.cpp directory (recorded in run metadata; "
+             "inference itself runs through llama-cpp-python)",
+    )
+    compare_parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=1,
+        dest="n_samples",
+        help="Number of inference samples per question for consistency scoring (default: 1)",
+    )
+    compare_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="Sampling temperature (default: 0.0 = greedy; use >0 with --n-samples)",
+    )
+    compare_parser.add_argument(
+        "--top-p",
+        type=float,
+        default=1.0,
+        dest="top_p",
+        help="Top-p nucleus sampling (default: 1.0)",
+    )
+    compare_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=0,
+        dest="top_k",
+        help="Top-k sampling (default: 0 = disabled)",
+    )
+    compare_parser.add_argument(
+        "--system-prompt",
+        default=None,
+        dest="system_prompt",
+        help="Override the default system prompt",
+    )
+    compare_parser.add_argument(
+        "--reasoning-mode",
+        action="store_true",
+        dest="reasoning_mode",
+        help="Use a step-by-step reasoning system prompt (for models with think mode)",
+    )
+    compare_parser.set_defaults(func=_cmd_compare)
+
+    # ── fix-metadata ──────────────────────────────────────────────────────────
+    fix_parser = subparsers.add_parser(
+        "fix-metadata",
+        help="Fix GGUF metadata mismatches (e.g. block_count > actual block tensors)",
+    )
+    fix_parser.add_argument("model", help="Path to GGUF model file")
+    fix_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be changed without modifying the file",
+    )
+    fix_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Apply patches without prompting for confirmation",
+    )
+    fix_parser.set_defaults(func=cmd_fix_metadata)
 
     # ─────────────────────────────────────────────────────────────────────────
     args = parser.parse_args()

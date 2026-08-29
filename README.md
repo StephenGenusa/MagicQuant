@@ -4,7 +4,41 @@
 
 A Python implementation of the MagicQuant framework — an evolutionary search algorithm that discovers optimal per-group quantization configurations for LLM GGUF files. Instead of applying one quantization scheme globally, MagicQuant assigns different schemes to different tensor groups (embeddings, attention, FFN) based on measured sensitivity, producing models that break the standard size/quality/speed Pareto frontier.
 
+This repository is a clone of [lucasmcoleman/MagicQuant](https://github.com/lucasmcoleman/MagicQuant) that adds a few features:
+
+- **`magicquant compare`** — side-by-side inference across every generated tier, automatically scored against a curated question pool (arithmetic, factual recall, multilingual, long-context, code, and more), with an HTML comparison report. Practical validation of what a tier actually loses, beyond perplexity.
+- **`magicquant fix-metadata`** — in-place repair of GGUF metadata mismatches (e.g. `block_count` higher than the tensors actually present), without rewriting the file.
+
+## Table of Contents
+
+- [Origin & Credit](#origin--credit)
+- [How It Works](#how-it-works)
+  - [Tensor Groups](#tensor-groups)
+  - [Supported Quantization Schemes](#supported-quantization-schemes)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Full Pipeline](#full-pipeline)
+  - [Analyze](#analyze)
+  - [Probe](#probe)
+  - [Search](#search)
+  - [Generate](#generate)
+  - [Importance Matrix (imatrix)](#importance-matrix-imatrix)
+  - [Quantization-Aware Training (QAT-LoRA)](#quantization-aware-training-qat-lora)
+  - [Manual Hybrid from YAML Config](#manual-hybrid-from-yaml-config)
+  - [Python API](#python-api)
+  - [Model Card](#model-card)
+  - [Compare (side-by-side tier validation)](#compare-side-by-side-tier-validation)
+  - [Fix Metadata](#fix-metadata)
+- [Architecture](#architecture)
+- [Configuration via Environment](#configuration-via-environment)
+- [Docker](#docker)
+- [Development](#development)
+- [Known Limitations](#known-limitations)
+- [License](#license)
+
 ## Origin & Credit
+
+The quantization engine itself — the evolutionary search, v2 budget search, QAT-LoRA training, and libggml-backed encoders — is developed at [lucasmcoleman/MagicQuant](https://github.com/lucasmcoleman/MagicQuant), the upstream of this repository.
 
 This project is an implementation of the **MagicQuant** methodology created by [**magiccodingman**](https://github.com/magiccodingman). The original research, empirical findings, and the "MXFP4 Anomaly" discovery are documented in the [MagicQuant Wiki](https://github.com/magiccodingman/MagicQuant-Wiki). Published hybrid models are available on HuggingFace:
 
@@ -140,6 +174,97 @@ magicquant search model-bf16.gguf --output-dir ./output --generations 50
 # 4. Generate best Q4, Q5, Q6 hybrid GGUFs
 magicquant generate model-bf16.gguf --output-dir ./output --tiers Q4,Q5,Q6
 ```
+
+### Analyze
+
+Inspect a GGUF's structure without touching it: architecture, tensor count, and how every tensor classifies into the sensitivity groups (E/H/Q/K/O/U/D/S/N/V/X/R) that the rest of the pipeline operates on. Run this first on an unfamiliar model — if a tensor lands in the wrong group here, every downstream decision inherits the error.
+
+```bash
+magicquant analyze model-bf16.gguf
+```
+
+Takes only the model path; no flags.
+
+### Probe
+
+Measure per-group sensitivity: quantize one tensor group at a time, score the damage, and write the resulting sensitivity weights to `sensitivity.json` in the output directory. `search` runs probing automatically, so the standalone command is for inspecting sensitivities on their own or pre-computing them for a later search.
+
+```bash
+magicquant probe model-bf16.gguf --output-dir ./output
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output-dir PATH` | `./output` | Where `sensitivity.json` is written |
+| `--baseline-ppl FLOAT` | `5.0` | Baseline perplexity of the uncompressed model |
+| `--llamacpp-path PATH` | auto-detect | Path to the llama.cpp directory |
+
+With llama.cpp available, probes are measured (KL divergence against saved reference logits); without it, heuristic estimates are used.
+
+### Search
+
+The core command: discover the best hybrid config per compression tier. Two algorithms share the entry point:
+
+- **v1 (default)** — evolutionary Predict→Build→Measure→Learn search over per-group configs. With `--rounds N` (default 3), each round actually builds the top candidates, measures them with llama-perplexity, and feeds the residuals back into the predictor. `--rounds 0` is prediction-only and needs no llama.cpp.
+- **v2 (`--algo v2 --budget-gb N`)** — budget-constrained per-tensor allocation: builds a per-tensor × per-scheme distortion table through libggml, then solves an exact knapsack for a target size, verifying only 2–3 frontier anchors with full perplexity.
+
+```bash
+# Measured evolutionary search
+magicquant search model-bf16.gguf --output-dir ./output --rounds 3
+
+# Budget search: best possible model that fits in 12 GiB
+magicquant search model-bf16.gguf --algo v2 --budget-gb 12
+```
+
+Results land in `search_results.json` (consumed by `generate`, `qat`, and `card`). Every flag also has a `MAGICQUANT_*` environment-variable equivalent.
+
+Common flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--rounds N` | `3` | Measurement rounds (0 = prediction only) |
+| `--generations N` | `30` | Evolutionary generations |
+| `--population N` | `80` | Population size |
+| `--candidates N` | `4` | Candidates built and measured per round |
+| `--patience N` | off | Early-stop after N generations without improvement |
+| `--use-imatrix` | off | Capture/reuse an importance matrix and weight candidate builds with it |
+| `--enable-kl` | off | Blend measured KL-divergence-to-base into survivor selection |
+| `--enable-iq` | off | Add IQ-family quant types to the search pool |
+| `--enable-speed-bench` | off | Measure real tokens/sec per candidate via llama-bench |
+| `--seed N` | unset | Reproducible search |
+| `--dry-run` | — | Validate config and source model, then exit |
+
+v2-only flags (with `--algo v2`):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--budget-gb N` | required | Target model size in GiB (weights only) |
+| `--anchors N` | `2` | Frontier points to build and verify with full-corpus perplexity |
+| `--floor GROUP=SCHEME` | none | Minimum scheme per group, repeatable (e.g. `--floor E=Q6_K`) |
+| `--target-profile q4nx` | — | Restrict schemes to a serving container's packable types |
+| `--probe-mode single\|cumulative` | `single` | How group-calibration probes measure damage |
+| `--no-group-probes` | — | Skip measured calibration (pure surrogate allocation) |
+
+Run `magicquant search --help` for the full list, including measurement caps, speed weighting, calibration I/O, and the ROCmFPX fork types.
+
+### Generate
+
+Build the actual hybrid GGUFs from a finished search's `search_results.json`. Each requested tier gets the best measured config from the search, written with per-tensor quantization via the streaming GGUF writer.
+
+```bash
+magicquant generate model-bf16.gguf --output-dir ./output --tiers Q4,Q5,Q6
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output-dir PATH` | `./output` | Directory containing `search_results.json`; hybrids are written here |
+| `--tiers LIST` | `Q4,Q5,Q6` | Comma-separated tiers to generate |
+| `--target-quant NAME` | `MXFP4_MOE` | Target base quantization |
+| `--verify` | off | Measure perplexity of each generated hybrid |
+| `--adapter PATH` | none | LoRA adapter directory to merge on-the-fly during the write |
+| `--llamacpp-path PATH` | auto-detect | Path to the llama.cpp directory (for `--verify`) |
+
+Remember that a tier name is a size band, not a recipe — see [How It Works](#how-it-works).
 
 ### Importance Matrix (imatrix)
 
@@ -288,6 +413,126 @@ magicquant card --output-dir ./output --model model-bf16.gguf --base-model org/M
 - `--upload` — upload the generated card to HuggingFace (requires
   `huggingface_hub`, `pip install 'magicquant[hf]'`); needs `--repo`.
 - `--repo` — target HF repo id (`owner/name`) for `--upload`.
+
+### Compare (side-by-side tier validation)
+
+Run side-by-side inference across every GGUF in an output directory, score the responses automatically, and write an HTML comparison report. This is the practical validation step after `generate` — it shows which quantization tier first starts to fail on tasks that matter, rather than relying solely on perplexity as a quality proxy.
+![](./Screenshot%20from%202026-06-24%2021-44-29.png)
+
+```bash
+magicquant compare [OPTIONS]
+```
+
+| Flag | Default     | Description |
+|------|-------------|-------------|
+| `--output-dir PATH` | `./output`  | Directory containing GGUFs to compare and where results are written |
+| `--questions-file PATH` | bundled     | YAML question pool (default: built-in 20-question set) |
+| `--question-count INT` | `20`        | Questions to use, sampled proportionally from easy / medium / hard |
+| `--max-tokens INT` | `6000`      | Maximum tokens to generate per response. **Thinking models** (Qwen3, DeepSeek-R1, etc.) emit `<think>` chain-of-thought that can consume 1 000–3 000 tokens before the final answer is written; lower values silently truncate the response and produce wrong scores |
+| `--context-size INT` | `8192`      | Context window size. Auto-expanded when passage-based questions need more. Must comfortably exceed `--max-tokens` plus prompt length |
+| `--n-samples INT` | `1`         | Inference samples per question. Use with `--temperature >0` to measure answer consistency |
+| `--temperature FLOAT` | `0.0`       | Sampling temperature (0 = greedy / deterministic) |
+| `--top-p FLOAT` | `1.0`       | Nucleus sampling cutoff |
+| `--top-k INT` | `0`         | Top-k sampling (0 = disabled) |
+| `--system-prompt TEXT` | built-in    | Override the default system prompt for all questions |
+| `--reasoning-mode` | false       | Switch to a step-by-step reasoning system prompt — useful for models with a built-in thinking mode |
+| `--llamacpp-path PATH` | auto-detect | Path to the llama.cpp directory |
+
+**What it measures.** The built-in question pool targets eight failure modes — cognitive axes where quantization noise is most likely to produce wrong or degraded answers:
+
+| Failure Mode | What It Tests |
+|--------------|---------------|
+| `arithmetic` | Multi-step calculation, compound interest, train-meeting problems |
+| `factual_recall` | Exact factual knowledge (capitals, historical facts, constants) |
+| `multilingual` | Non-English prompts with expected non-English answers (Chinese, Russian, Farsi) |
+| `long_context` | Reading comprehension from a prepended passage (500–4 000 tokens) |
+| `multi_hop` | Chained inference with a known cognitive trap (bat-and-ball, CRT) |
+| `code` | Python function generation and SQL query construction |
+| `proof` | Formal mathematical argument requiring structured reasoning |
+| `instruction_following` | Structured output, attention-mechanism explanation, multi-part response |
+
+Questions are stratified: 5 easy, 7 medium, 8 hard. When fewer than 20 questions are requested with `--question-count`, the proportions are preserved. Each question has a `scoring_type` that drives automated evaluation:
+
+| Scoring Type | How It Works |
+|--------------|--------------|
+| `exact_numeric` | Extracts the last number in the response and compares to ground truth with optional tolerance. Reports **near_miss** if within 2× tolerance (or ±5% when tolerance is zero) |
+| `quadratic_roots` | Extracts all numbers and fractions, checks both roots are present order-independently within tolerance |
+| `keyphrase` | All required phrases must appear as case-insensitive substrings |
+| `code_syntax` | Extracts fenced Python blocks and validates with `ast.parse` |
+| `none` | Open-ended; response preserved for manual review |
+
+Every scored response returns one of four statuses:
+- **pass** — matches ground truth within tolerance
+- **near_miss** — quantization degraded precision but the model "knew" the answer (informational; counted as fail in summary scores)
+- **fail** — wrong or no answer
+- **unscored** — open-ended question (proofs, explanations), manual review required
+
+**Output.** Each run writes to `{output-dir}/comparisons/{timestamp}/`:
+
+```
+comparisons/
+  20260624T143021/
+    comparison.html    ← score bars, side-by-side responses, breakdown tables, reproducibility footer
+    comparison.md      ← same content in Markdown for git-friendly diffs
+    meta.json          ← git commit, CLI args, question-file SHA-256, all inference parameters
+    raw_responses/
+      model-Q4.gguf/Q01.json … Q20.json   ← per-question samples + scores for scripting
+      model-Q5.gguf/Q01.json … Q20.json
+```
+
+A `comparison_latest` symlink in `output-dir` always points to the most recent run, so `open output/comparison_latest/comparison.html` works without knowing the timestamp.
+
+The HTML report includes:
+- A **summary table** with total score, per-failure-mode breakdown, and optional PPL (pulled from `search_results.json` if present)
+- A **per-question table** with colour-coded score bars above each response box — scroll-to-answer behaviour so long chain-of-thought preambles don't bury the result
+- A **failure-mode breakdown table** showing pass/fail counts per axis per model — useful for spotting that a Q4 hybrid loses arithmetic precision before it loses factual recall
+- A **reproducibility footer** (expandable) with the exact CLI invocation, git commit, and question-file hash
+
+**Typical workflow:**
+
+```bash
+# 1. Generate hybrid tiers
+magicquant generate model-bf16.gguf --output-dir ./output
+
+# 2. Compare all tiers across the full question set
+magicquant compare --output-dir ./output
+
+# 3. Open the report
+xdg-open ./output/comparison_latest/comparison.html
+```
+
+**Consistency testing.** With `--n-samples 3 --temperature 0.3`, each question is answered three times. A consistency score (fraction of samples sharing the majority status) is reported alongside the primary answer — useful for detecting models that are "technically correct" on average but unreliable on repeated runs.
+
+**Custom question pools.** Point `--questions-file` at any YAML file matching the built-in schema to test domain-specific tasks — code review, legal reasoning, clinical notes, etc. The schema supports per-question passage files, per-question system-prompt overrides, and all five scoring types.
+
+**GPU acceleration.** Inference runs through `llama-cpp-python` (a core dependency). Each model is loaded once; all questions are answered in a single session, so inference time scales with the number of models rather than the number of questions. Install the CUDA build for models >3B:
+
+```bash
+CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+```
+
+### Fix Metadata
+
+Repair GGUF metadata mismatches in-place.
+
+```bash
+magicquant fix-metadata model.gguf [--dry-run] [-y]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Show proposed metadata patches without modifying the file |
+| `-y`, `--yes` | Apply patches without a confirmation prompt |
+
+When to use: if llama.cpp reports `missing tensor 'blk.N.attn_norm.weight'` on a model
+that was converted from HuggingFace, the GGUF `block_count` metadata may be higher than the
+actual number of layer tensors present. This is common with Qwen3.5 and other architectures
+where multi-token prediction (MTP/nextn) layers are dropped during conversion but the metadata
+count is not corrected.
+
+Run with `--dry-run` first to review the proposed changes, then without it (or with `-y`) to apply.
+MagicQuant's GGUF writer automatically corrects `block_count` in any model it generates;
+this command repairs existing source files.
 
 ## Architecture
 
