@@ -31,8 +31,14 @@ agent_logs/
 # Submodules / external docs
 MagicQuant-Wiki/
 
+# Local llama.cpp build
+bin/llama.cpp/
+
 # pytest
 .pytest_cache/
 
 # ruff
 .ruff_cache/
+
+# Superpowers plans/specs (local working notes)
+docs/superpowers/
