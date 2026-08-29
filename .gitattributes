@@ -1,0 +1,10 @@
+# Line endings are pinned in-repo so they do not depend on each machine's
+# core.autocrlf. This tree round-tripped through Windows once (2026-08) and
+# came back entirely CRLF, which made all 54 changed files read as rewritten.
+* text=auto eol=lf
+
+# Binaries git must never touch. The tracked PNG contains raw CR bytes.
+*.png    binary
+*.npy    binary
+*.gguf   binary
+*.safetensors binary
