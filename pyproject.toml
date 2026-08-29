@@ -85,3 +85,5 @@ exclude = ["docker*", "tests*", "tools*"]
 
 [tool.setuptools.package-data]
 magicquant = ["data/calib_corpus.txt"]
+"magicquant.data" = ["*.yaml", "*.txt"]
+"magicquant.data.passages" = ["*.txt"]

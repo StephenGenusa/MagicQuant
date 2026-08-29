@@ -1,0 +1,195 @@
+VANTHORPE INDUSTRIAL SUPPLY — PRODUCT CATALOG Q2 2026
+
+All prices in USD. Prices subject to change without notice. Minimum order quantities may apply.
+Contact your regional sales representative for volume pricing on orders over 500 units.
+
+--------------------------------------------------------------------------------
+SKU: VS-1001 | Albatross Coupling
+Category: Mechanical — Connectors
+Unit Price: $84.00
+Description: High-torque rotary coupling rated to 1,200 Nm. Stainless steel body with
+nylon insert. Compatible with VS-1000 series shafts. Sold individually.
+
+--------------------------------------------------------------------------------
+SKU: VS-1002 | Aardvark Widget
+Category: Electronic — Sensors
+Unit Price: $127.00
+Description: Precision Hall-effect proximity sensor with integrated signal conditioning.
+Operating range 0–50 mm. Supply voltage 5–24 VDC. Output: NPN open-collector.
+IP67 rated. Comes with 2 m shielded cable and mounting bracket.
+
+--------------------------------------------------------------------------------
+SKU: VS-1003 | Anteater Widget
+Category: Electronic — Sensors
+Unit Price: $119.00
+Description: Similar form factor to VS-1002 but uses inductive sensing technology.
+Suitable for detection of ferrous and non-ferrous metals. Range 0–30 mm.
+Supply voltage 10–30 VDC. IP65 rated.
+
+--------------------------------------------------------------------------------
+SKU: VS-1004 | Badger Relay Module
+Category: Electronic — Control
+Unit Price: $43.50
+Description: DIN-rail mounted relay module, 4-channel, 10 A per channel.
+Input voltage 24 VDC. Screw-terminal connections. Status LED per channel.
+
+--------------------------------------------------------------------------------
+SKU: VS-1005 | Capybara Flow Sensor
+Category: Fluid — Measurement
+Unit Price: $215.00
+Description: Turbine flow sensor for water and light oils. Range 2–50 L/min.
+Output: pulse (1 pulse per 0.1 L). Body material: PVDF. G1/2 threaded ports.
+
+--------------------------------------------------------------------------------
+SKU: VS-1006 | Dingo Pressure Transducer
+Category: Fluid — Measurement
+Unit Price: $98.50
+Description: Ceramic capacitive pressure transducer, 0–10 bar. 4–20 mA output.
+G1/4 process connection. Operating temperature -10 to +85 °C.
+
+--------------------------------------------------------------------------------
+SKU: VS-1007 | Echidna Seal Kit
+Category: Mechanical — Maintenance
+Unit Price: $22.00
+Description: O-ring and lip seal replacement kit for VS-2000 series actuators.
+Contains 14 pieces in assorted sizes. Nitrile rubber. Sold as kit.
+
+--------------------------------------------------------------------------------
+SKU: VS-1008 | Ferret Encoder
+Category: Electronic — Motion
+Unit Price: $178.00
+Description: Incremental rotary encoder, 1024 PPR, push-pull output.
+Shaft diameter 6 mm. Supply voltage 5–26 VDC. IP64 rated.
+
+--------------------------------------------------------------------------------
+SKU: VS-1009 | Gecko Grip Pad
+Category: Mechanical — Handling
+Unit Price: $14.75
+Description: Silicone vacuum pad for pick-and-place applications. 50 mm diameter.
+Max lift capacity 2.5 kg at 0.6 bar. Bellows-style. M5 thread.
+
+--------------------------------------------------------------------------------
+SKU: VS-1010 | Hamster Hinge Assembly
+Category: Mechanical — Structural
+Unit Price: $37.00
+Description: Heavy-duty stainless steel piano hinge, 300 mm length.
+Leaf width 50 mm. Hole pitch 40 mm. Suitable for panels up to 15 kg.
+
+--------------------------------------------------------------------------------
+SKU: VS-1011 | Ibis Indicator Light
+Category: Electronic — HMI
+Unit Price: $8.90
+Description: Panel-mount LED indicator, 22 mm, red. Supply voltage 24 VDC.
+IP65 front face. Snap-mount. Pre-wired with 150 mm leads.
+
+--------------------------------------------------------------------------------
+SKU: VS-1012 | Jaguar Junction Box
+Category: Electrical — Enclosures
+Unit Price: $62.00
+Description: Polycarbonate junction box 150 × 110 × 70 mm. IP66 rated.
+4 × M20 cable gland entries (blanked). DIN rail inside. Grey RAL 7035.
+
+--------------------------------------------------------------------------------
+SKU: VS-1013 | Kookaburra Clamp
+Category: Mechanical — Fixings
+Unit Price: $5.50
+Description: Spring-action pipe clamp, 25 mm bore. 304 stainless steel.
+Maximum operating pressure 6 bar. Sold in packs of 10.
+
+--------------------------------------------------------------------------------
+SKU: VS-1014 | Mongoose Widget
+Category: Electronic — Actuators
+Unit Price: $233.00
+Description: Smart linear actuator with integrated position feedback.
+Stroke 50 mm, force 500 N, speed 10 mm/s nominal. Supply voltage 24 VDC.
+RS-485 Modbus RTU interface. Includes mounting brackets and cable.
+
+--------------------------------------------------------------------------------
+SKU: VS-1015 | Marmoset Widget
+Category: Electronic — Actuators
+Unit Price: $241.00
+Description: Similar actuator to VS-1014 but with analog (0–10 V) position control
+instead of Modbus. Stroke 100 mm. Same force and speed ratings. IP54 rated.
+
+--------------------------------------------------------------------------------
+SKU: VS-1016 | Numbat Nozzle
+Category: Fluid — Dispensing
+Unit Price: $19.00
+Description: Stainless steel dispensing nozzle, 1.5 mm orifice. G1/8 inlet.
+Suitable for adhesives and lubricants. Temperature range -20 to +120 °C.
+
+--------------------------------------------------------------------------------
+SKU: VS-1017 | Ocelot Oiler
+Category: Fluid — Lubrication
+Unit Price: $54.00
+Description: Automatic oiler for chain drives. Reservoir 250 mL. Adjustable
+output rate 1–30 drops/min. 24 VDC solenoid valve. Stainless steel reservoir.
+
+--------------------------------------------------------------------------------
+SKU: VS-1018 | Pangolin Panel Meter
+Category: Electronic — HMI
+Unit Price: $76.50
+Description: 3.5-digit panel meter for DC voltage and current. 72 × 72 mm panel
+cutout. Supply voltage 9–24 VDC. 4–20 mA or 0–10 V input selectable.
+
+--------------------------------------------------------------------------------
+SKU: VS-1019 | Quokka Quick Coupler
+Category: Fluid — Connectors
+Unit Price: $28.00
+Description: Push-to-connect pneumatic coupler, 6 mm OD tube. Body: zinc alloy.
+Max pressure 10 bar. Working temperature -5 to +60 °C. Sold individually.
+
+--------------------------------------------------------------------------------
+SKU: VS-1020 | Raccoon Relay
+Category: Electronic — Control
+Unit Price: $31.00
+Description: Miniature PCB relay, SPDT, 10 A contacts. Coil voltage 24 VDC.
+Pin pitch 5 mm. Operating temperature -40 to +85 °C. UL listed.
+
+--------------------------------------------------------------------------------
+SKU: VS-1021 | Serval Safety Relay
+Category: Electronic — Safety
+Unit Price: $189.00
+Description: Safety relay module, dual-channel, PLd Cat 3 rated. 24 VDC supply.
+2 safety outputs + 1 auxiliary output. DIN-rail mount. Screw terminals.
+
+--------------------------------------------------------------------------------
+SKU: VS-1022 | Tapir Terminal Block
+Category: Electrical — Wiring
+Unit Price: $3.20
+Description: Spring-cage terminal block, 4 mm², 600 V rated. Grey. DIN 35 rail.
+Sold individually; order in multiples of 50 for best pricing.
+
+--------------------------------------------------------------------------------
+SKU: VS-1023 | Urial USB Isolator
+Category: Electronic — Communication
+Unit Price: $47.00
+Description: USB 2.0 galvanic isolator, 2 kV isolation. Full-speed (12 Mbps).
+Bus-powered. Standard Type-A connectors on both sides. Compact 60 × 30 mm body.
+
+--------------------------------------------------------------------------------
+SKU: VS-1024 | Vole Valve Positioner
+Category: Fluid — Control
+Unit Price: $312.00
+Description: Smart valve positioner for rotary actuators. HART/4–20 mA interface.
+Input signal split-range configurable. Auto-calibration. Explosion-proof (ATEX II 2G).
+
+--------------------------------------------------------------------------------
+SKU: VS-1025 | Wombat Weight Sensor
+Category: Electronic — Measurement
+Unit Price: $93.00
+Description: Single-point load cell, 20 kg capacity. Accuracy class C3.
+Stainless steel construction. Cable exit with 3 m shielded lead. Sealed IP68.
+
+--------------------------------------------------------------------------------
+SKU: VS-1026 | Xerus XTAL Oscillator
+Category: Electronic — Timing
+Unit Price: $11.50
+Description: SMD crystal oscillator, 25 MHz, ±25 ppm. 3.3 V supply. 4-pad 3225 package.
+Operating temperature -40 to +85 °C. Tape and reel packaging.
+
+--------------------------------------------------------------------------------
+
+END OF CATALOG — VANTHORPE INDUSTRIAL SUPPLY
+For orders and inquiries: sales@vanthorpe-supply.example.com
+Last updated: 2026-Q2

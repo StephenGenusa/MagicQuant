@@ -1,0 +1,171 @@
+# MagicQuant comparison question pool
+#
+# Ordered easy → medium → hard.
+# failure_mode targets what quantization axis is stressed:
+#   arithmetic | factual_recall | multilingual | long_context
+#   multi_hop  | code           | proof        | instruction_following
+#
+# scoring_type: exact_numeric | keyphrase | code_syntax | quadratic_roots | none
+# ground_truth: required when scoring_type != none
+# tolerance:    abs/rel keys, only for exact_numeric / quadratic_roots
+# n_samples:    per-question override (default 1)
+# system_prompt_override: replaces global system prompt for this question only
+# passage_file: path relative to this file's directory; prepended to prompt
+
+questions:
+
+  # ── Easy (5) ────────────────────────────────────────────────────────────────
+
+  - id: 1
+    difficulty: easy
+    failure_mode: factual_recall
+    scoring_type: keyphrase
+    ground_truth: "Paris"
+    prompt: "What is the capital of France?"
+
+  - id: 2
+    difficulty: easy
+    failure_mode: arithmetic
+    scoring_type: exact_numeric
+    ground_truth: 360
+    tolerance: {abs: 0}
+    prompt: "What is 15 × 24? Show your work."
+
+  - id: 3
+    difficulty: easy
+    failure_mode: factual_recall
+    scoring_type: keyphrase
+    ground_truth: "299"
+    prompt: "What is the approximate speed of light in meters per second? Give only the first three significant digits."
+
+  - id: 4
+    difficulty: easy
+    failure_mode: multilingual
+    scoring_type: keyphrase
+    ground_truth: "北京"
+    prompt: "中国的首都是哪里？请只回答城市名称。"
+
+  - id: 5
+    difficulty: easy
+    failure_mode: long_context
+    scoring_type: keyphrase
+    ground_truth: "Golden Loaf"
+    passage_file: "passages/easy_bakery.txt"
+    prompt: "Based on the passage above, what is the name of the bakery on Oak Street?"
+
+  # ── Medium (7) ──────────────────────────────────────────────────────────────
+
+  - id: 6
+    difficulty: medium
+    failure_mode: arithmetic
+    scoring_type: exact_numeric
+    ground_truth: 72
+    tolerance: {abs: 0}
+    prompt: "A train leaves City A traveling at 60 mph. At the same time, another train leaves City B (which is 120 miles from City A) traveling toward City A at 40 mph. How many minutes after departure do the two trains meet?"
+
+  - id: 7
+    difficulty: medium
+    failure_mode: arithmetic
+    scoring_type: exact_numeric
+    ground_truth: 2
+    tolerance: {abs: 0}
+    prompt: "What is the remainder when 2^10 is divided by 7? Show your calculation."
+
+  - id: 8
+    difficulty: medium
+    failure_mode: multi_hop
+    scoring_type: exact_numeric
+    ground_truth: 0.05
+    tolerance: {abs: 0.001}
+    prompt: "A bat and a ball together cost $1.10. The bat costs exactly $1.00 more than the ball. How much does the ball cost in dollars? Show your reasoning step by step."
+
+  - id: 9
+    difficulty: medium
+    failure_mode: arithmetic
+    scoring_type: keyphrase
+    ground_truth: ["9x", "4x", "5"]
+    prompt: "Find the derivative of f(x) = 3x³ - 2x² + 5x - 1. Give the simplified result."
+
+  - id: 10
+    difficulty: medium
+    failure_mode: arithmetic
+    scoring_type: exact_numeric
+    ground_truth: 1191.02
+    tolerance: {abs: 0.05}
+    prompt: "If you invest $1,000 at 6% annual interest compounded annually, what is the balance after 3 years? Write out the formula and compute the exact value."
+
+  - id: 11
+    difficulty: medium
+    failure_mode: multilingual
+    scoring_type: exact_numeric
+    ground_truth: 1.6
+    tolerance: {abs: 0.05}
+    prompt: "Поезд выехал из города А со скоростью 60 км/ч. Через 2 часа навстречу ему из города Б, находящегося на расстоянии 280 км от города А, выехал второй поезд со скоростью 40 км/ч. Через сколько часов после выезда второго поезда они встретятся? Дайте ответ числом."
+
+  - id: 12
+    difficulty: medium
+    failure_mode: factual_recall
+    scoring_type: keyphrase
+    ground_truth: "John Key"
+    prompt: "Who was the Prime Minister of New Zealand from 2008 to 2016? Give their full name."
+
+  # ── Hard (8) ────────────────────────────────────────────────────────────────
+
+  - id: 13
+    difficulty: hard
+    failure_mode: arithmetic
+    scoring_type: quadratic_roots
+    ground_truth: [0.3333, 2.0]
+    tolerance: {abs: 0.01}
+    prompt: "Solve the quadratic equation 3x² - 7x + 2 = 0. Show every step and give exact solutions."
+
+  - id: 14
+    difficulty: hard
+    failure_mode: code
+    scoring_type: code_syntax
+    ground_truth: null
+    prompt: "Write a Python function that computes the nth Fibonacci number using memoization (top-down dynamic programming with a cache). Include a brief docstring. The function signature should be: def fibonacci(n: int) -> int:"
+
+  - id: 15
+    difficulty: hard
+    failure_mode: code
+    scoring_type: keyphrase
+    ground_truth: ["SELECT", "MAX"]
+    prompt: "Write a SQL query to find the second-highest salary from a table named Employee with columns (id, name, salary). Your query must return NULL if there is no second-highest salary, and must handle the case where multiple employees share the highest salary."
+
+  - id: 16
+    difficulty: hard
+    failure_mode: proof
+    scoring_type: none
+    ground_truth: null
+    prompt: "Prove that √2 is irrational. Provide a complete proof by contradiction, clearly stating each step."
+
+  - id: 17
+    difficulty: hard
+    failure_mode: code
+    scoring_type: code_syntax
+    ground_truth: null
+    prompt: "Implement binary search in Python. The function should take a sorted list and a target value, and return the index of the target or -1 if not found. Include the function signature: def binary_search(arr: list, target) -> int:"
+
+  - id: 18
+    difficulty: hard
+    failure_mode: instruction_following
+    scoring_type: none
+    ground_truth: null
+    prompt: "Describe the self-attention mechanism in a Transformer model. What do the Query (Q), Key (K), and Value (V) matrices represent, and what does the attention formula Attention(Q,K,V) = softmax(QKᵀ/√dₖ)V compute?"
+
+  - id: 19
+    difficulty: hard
+    failure_mode: multilingual
+    scoring_type: keyphrase
+    ground_truth: "تهران"
+    prompt: "پایتخت ایران چیست؟ و در کدام استان واقع شده است؟ پاسخ خود را به فارسی بنویسید."
+
+  - id: 20
+    difficulty: hard
+    failure_mode: long_context
+    scoring_type: exact_numeric
+    ground_truth: 847
+    tolerance: {abs: 2}
+    passage_file: "passages/hard_catalog.txt"
+    prompt: "Based on the product catalog above, if you buy 3 units of the Aardvark Widget and 2 units of the Mongoose Widget, what is the total cost in dollars? Give only the number."
