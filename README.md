@@ -435,7 +435,7 @@ unrecorded condition is labelled as such. Filename quant labels (e.g.
 ### Compare (side-by-side tier validation)
 
 Run side-by-side inference across every GGUF in an output directory, score the responses automatically, and write an HTML comparison report. This is the practical validation step after `generate` — it shows which quantization tier first starts to fail on tasks that matter, rather than relying solely on perplexity as a quality proxy.
-![](./Screenshot%20from%202026-11-01%2009-30-19.png)
+![](./Screenshot%20from%202026-11-01%2009-48-49.png)
 
 ```bash
 magicquant compare [OPTIONS]
@@ -485,6 +485,8 @@ Every scored response returns one of four statuses:
 - **near_miss** — quantization degraded precision but the model "knew" the answer (informational; counted as fail in summary scores)
 - **fail** — wrong or no answer
 - **unscored** — open-ended question (proofs, explanations), manual review required. Unscored questions are kept out of every score denominator; they are not failures.
+
+**Degenerate answers are flagged.** A file can score well and have a low KL divergence yet still produce garbage on one question: KL divergence is an average over the whole corpus, and the score ignores unscored questions. Each answer is checked for a repetition loop (a 40-character passage repeated 10+ times, code blocks excluded), an answer in the wrong language (for questions with `response_language`), or no answer. Flagged answers are counted in the summary's **Flagged** column, marked ⚠ in the side-by-side responses, and listed in the Markdown report. Hitting the token limit alone is not a flag. The report opens with a short "How to read this" block explaining Score, Mean KLD, Consistency and Flagged.
 
 Multilingual questions state their expected response language in the prompt itself (`response_language` in the YAML): the system prompt is English, so a model that answers a Chinese question correctly in English has followed its instructions.
 

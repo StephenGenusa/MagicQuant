@@ -21,6 +21,7 @@ class InferenceResult:
     consistency: float
     primary_status: str
     primary_response: str
+    flags: list = field(default_factory=list)  # degeneration flags, primary answer
 
 
 @dataclass
@@ -34,6 +35,7 @@ class ModelInfo:
     size_gb: float
     ppl: Optional[float] = None
     mean_kld: Optional[float] = None  # vs the reference, from kl_scores.json
+    flagged_answers: int = 0          # answers with a degeneration flag
     total_score: int = 0
     total_questions: int = 0      # automatically scored questions only
     unscored_questions: int = 0   # open-ended answers left for manual review
@@ -60,20 +62,63 @@ def _pct_color(passes: int, total: int) -> str:
     return "partial"
 
 
+def _how_to_read_points(models: list) -> list:
+    """Plain-text explanation shown under the run header (HTML and Markdown)."""
+    scored = max((m.total_questions for m in models), default=0)
+    step = f"about {100 / scored:.0f} points" if scored else "a large step"
+    points = [
+        f"**Score** counts automatically scored questions only ({scored} here). "
+        f"Open-ended answers (proofs, explanations) are left for you to judge "
+        f"and are not counted as failures; near misses count as fails. One "
+        f"question is {step}, so a gap of one or two between files is noise.",
+    ]
+    if any(m.mean_kld is not None for m in models):
+        points.append(
+            "**Mean KLD** is how far a file's next-token predictions drift from "
+            "the reference over the whole eval corpus (lower is better; the "
+            "reference against its own logits shows the noise floor, not 0). "
+            "Use it and PPL to rank files that score alike.")
+    points.append(
+        "**Consistency** is always 1.00 at temperature 0; it only means "
+        "something with --n-samples above 1 and a temperature above 0.")
+    points.append(
+        "**Flagged** counts answers that degenerated: a repetition loop, an "
+        "answer in the wrong language, or no answer. Neither the score nor KL "
+        "divergence shows these, so read the flagged answers below. Hitting "
+        "the token limit alone is not a flag.")
+    return points
+
+
+def _how_to_read_html(models: list) -> str:
+    import re as _re
+
+    items = "".join(
+        "<li>" + _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html_module.escape(pt)) + "</li>"
+        for pt in _how_to_read_points(models)
+    )
+    return f"<div class='how-to-read'><b>How to read this</b><ul>{items}</ul></div>"
+
+
+def _flag_badges_html(flags: list) -> str:
+    from magicquant.compare.degeneration import FLAG_LABELS
+
+    return "".join(
+        f"<div class='flag-badge'>⚠ {html_module.escape(FLAG_LABELS.get(f, f))}</div>"
+        for f in flags or []
+    )
+
+
 def _kld_str(model: "ModelInfo") -> str:
     return f"{model.mean_kld:.4f}" if model.mean_kld is not None else "—"
 
 
 def _summary_note(models: list) -> str:
-    unscored = max((m.unscored_questions for m in models), default=0)
-    note = ("Score counts automatically scored questions only"
-            + (f"; {unscored} open-ended answer(s) per model are left for manual "
-               f"review and are not counted as failures" if unscored else "")
-            + ". Near misses count as fails.")
+    """Note under the summary table. The scoring rules live in the "How to
+    read this" block above it; this only states where PPL/KLD came from."""
     if any(m.mean_kld is not None for m in models):
-        note += (" PPL and Mean KLD come from `magicquant kl-score` (one reference, "
-                 "same build, corpus and context), so every file is comparable.")
-    return note
+        return ("PPL and Mean KLD come from `magicquant kl-score` (one reference, "
+                "same build, corpus and context), so every file is comparable.")
+    return ""
 
 
 def _score_label(passes: int, total: int) -> str:
@@ -102,6 +147,7 @@ def populate_scores(
     passes = 0
     total = 0
     unscored = 0
+    flagged = 0
     consistencies = []
     mode_counts: dict[str, dict] = {}
 
@@ -112,6 +158,8 @@ def populate_scores(
             continue
         mode = q.get("failure_mode", "unknown")
         mode_counts.setdefault(mode, {"pass": 0, "total": 0})
+        if result.flags:  # scored or not: a looping proof still counts
+            flagged += 1
         if result.primary_status == "unscored":
             unscored += 1
             continue
@@ -128,6 +176,7 @@ def populate_scores(
     model.total_score = passes
     model.total_questions = total
     model.unscored_questions = unscored
+    model.flagged_answers = flagged
     model.consistency_score = (sum(consistencies) / len(consistencies)) if consistencies else 1.0
     model.per_mode_scores = mode_counts
 
@@ -182,6 +231,13 @@ td.neutral { color: #888; }
 .q-prompt { color: #333; font-size: 11px; line-height: 1.5; margin-top: 4px; }
 
 /* Difficulty badges */
+.how-to-read { background: #fff; border-radius: 6px; padding: 10px 16px;
+               margin-bottom: 16px; font-size: 12px; color: #444;
+               box-shadow: 0 1px 3px rgba(0,0,0,.08); line-height: 1.6; }
+.how-to-read ul { margin: 4px 0 0 18px; }
+.flag-badge { display: inline-block; margin: 2px 0 4px; padding: 2px 8px;
+              border-radius: 4px; background: #721c24; color: #fff;
+              font-size: 11px; font-weight: 600; }
 .badge { display: inline-block; padding: 1px 6px; border-radius: 8px;
          font-size: 10px; font-weight: 700; }
 .easy   { background: #d1fae5; color: #065f46; }
@@ -275,7 +331,7 @@ def generate_html(
     sum_header = (
         "<tr>"
         "<th>Model</th><th>bpw</th><th>Quant</th><th>Arch</th><th>PPL</th>"
-        "<th>Mean KLD</th>"
+        "<th>Mean KLD</th><th>Flagged</th>"
         "<th>Score</th><th>Consistency</th>"
         + "".join(f"<th>{e(m)}</th>" for m in active_modes)
         + "</tr>"
@@ -289,6 +345,7 @@ def generate_html(
             f"{model.total_score}/{model.total_questions}</span>"
         )
         cons_pct = f"{model.consistency_score:.2f}"
+        flag_cls = "fail" if model.flagged_answers else ""
         mode_cells = ""
         for mode in active_modes:
             mc = model.per_mode_scores.get(mode, {"pass": 0, "total": 0})
@@ -302,14 +359,16 @@ def generate_html(
             f"<td>{e(model.architecture)}</td>"
             f"<td>{ppl}</td>"
             f"<td>{_kld_str(model)}</td>"
+            f"<td class='{flag_cls}'>{model.flagged_answers}</td>"
             f"<td>{score_cell}</td>"
             f"<td>{cons_pct}</td>"
             f"{mode_cells}"
             f"</tr>\n"
         )
+    note = _summary_note(models)
     summary_table = (
         f"<table><thead>{sum_header}</thead><tbody>\n{sum_rows}</tbody></table>\n"
-        f"<p class='meta-header'>{e(_summary_note(models).replace('`', ''))}</p>\n"
+        + (f"<p class='meta-header'>{e(note.replace('`', ''))}</p>\n" if note else "")
     )
 
     # ── per-question comparison table ─────────────────────────────────────────
@@ -340,7 +399,7 @@ def generate_html(
             if result is None:
                 model_cells += "<td><div class='score-bar fail'>✗ No result</div></td>"
                 continue
-            bar = _score_bar_html(result, n_samples)
+            bar = _score_bar_html(result, n_samples) + _flag_badges_html(result.flags)
             resp_html = f"<div class='response'><div>{e(result.primary_response)}</div></div>"
             if n_samples > 1 and len(result.samples) > 1:
                 extra_html = ""
@@ -394,6 +453,8 @@ def generate_html(
         f"</details>"
     )
 
+    how_to_read = _how_to_read_html(models)
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -409,6 +470,7 @@ def generate_html(
   <div>{meta_line2}</div>
 </div>
 
+{how_to_read}
 <h2>Summary</h2>
 {summary_table}
 
@@ -461,15 +523,20 @@ def generate_markdown(
         "",
     ]
 
+    lines.append("**How to read this**")
+    lines.append("")
+    lines += [f"- {pt}" for pt in _how_to_read_points(models)]
+    lines += ["", "---", ""]
+
     # Summary table
     active_modes = [m for m in _FAILURE_MODES
                     if any(q.get("failure_mode") == m for q in questions)]
     lines.append("## Summary")
     lines.append("")
-    sum_header = ("| Model | bpw | Quant | Arch | PPL | Mean KLD | Score | Consistency | "
+    sum_header = ("| Model | bpw | Quant | Arch | PPL | Mean KLD | Flagged | Score | Consistency | "
                   + " | ".join(active_modes) + " |")
     lines.append(sum_header)
-    lines.append("|" + "|".join(["---"] * (8 + len(active_modes))) + "|")
+    lines.append("|" + "|".join(["---"] * (9 + len(active_modes))) + "|")
     for model in models:
         ppl = f"{model.ppl:.4f}" if model.ppl else "—"
         score = f"{model.total_score}/{model.total_questions}"
@@ -483,9 +550,28 @@ def generate_markdown(
         )
         lines.append(
             f"| {model.filename} | {model.bpw:.2f} | {model.quant_type} | "
-            f"{model.architecture} | {ppl} | {_kld_str(model)} | {score} | {cons} | {mode_cols} |"
+            f"{model.architecture} | {ppl} | {_kld_str(model)} | "
+            f"{model.flagged_answers} | {score} | {cons} | {mode_cols} |"
         )
-    lines += ["", _summary_note(models), "", "---", ""]
+    lines += [""] + ([_summary_note(models), ""] if _summary_note(models) else [])
+
+    from magicquant.compare.degeneration import FLAG_LABELS
+    flagged_rows = [
+        (model.filename, q["id"], q.get("failure_mode", ""), r.primary_status, r.flags)
+        for model in models
+        for q in questions
+        for r in [results.get(model.filename, {}).get(q["id"])]
+        if r is not None and r.flags
+    ]
+    if flagged_rows:
+        lines += ["### Flagged answers", "",
+                  "| Model | Question | Failure mode | Status | Flags |",
+                  "|---|---|---|---|---|"]
+        for name, qid, mode, status, flags in flagged_rows:
+            labels = ", ".join(FLAG_LABELS.get(f, f) for f in flags)
+            lines.append(f"| {name} | Q{qid} | {mode} | {status} | {labels} |")
+        lines.append("")
+    lines += ["---", ""]
 
     # Per-question sections
     for q in questions:
@@ -596,6 +682,8 @@ def write_raw_response(
         "scored_samples": [asdict(s) for s in result.scored_samples],
         "consistency": result.consistency,
         "primary_status": result.primary_status,
+        "response_language": question.get("response_language"),
+        "flags": list(result.flags),
     }
     (model_dir / f"{qid}.json").write_text(
         json.dumps(data, indent=2, default=str), encoding="utf-8"

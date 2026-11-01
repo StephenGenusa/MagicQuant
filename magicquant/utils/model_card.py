@@ -163,8 +163,12 @@ def _latest_compare(output_dir: Path) -> Optional[Dict[str, Any]]:
         for model_dir in sorted(d for d in raw.iterdir() if d.is_dir()):
             counts: Dict[str, int] = {}
             for q in model_dir.glob("*.json"):
-                status = (_read_json(q) or {}).get("primary_status") or "unknown"
+                rec = _read_json(q) or {}
+                status = rec.get("primary_status") or "unknown"
                 counts[status] = counts.get(status, 0) + 1
+                if "flags" in rec:  # absent in runs before degeneration flags
+                    counts["_flag_recorded"] = 1
+                    counts["_flagged"] = counts.get("_flagged", 0) + bool(rec["flags"])
             if counts:
                 scores[model_dir.name] = counts
     return {
@@ -841,26 +845,30 @@ def _compare_scores(scores: Dict[str, Dict[str, int]], rows: List[Dict],
     lines = [
         "## Task-level validation",
         "",
-        "| File | Tier | Mean KLD | Passed | Near miss | Failed | Unscored |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| File | Tier | Mean KLD | Passed | Near miss | Failed | Unscored | Flagged |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     ordered = sorted(scores.items(),
                      key=lambda kv: (-kv[1].get("pass", 0), kv[0]))
     total_q = None
     for name, c in ordered:
-        scored = sum(n for st, n in c.items() if st != "unscored")
-        total_q = total_q or sum(c.values())
+        statuses = {st: n for st, n in c.items() if not st.startswith("_")}
+        scored = sum(n for st, n in statuses.items() if st != "unscored")
+        total_q = total_q or sum(statuses.values())
+        flagged = str(c.get("_flagged", 0)) if c.get("_flag_recorded") else "—"
         lines.append(
             f"| `{name}` | {tier_of.get(name, 'reference')} | "
             f"{_fmt(_kl_for(inputs or {}, name).get('mean_kl'), '.4f')} | "
             f"{c.get('pass', 0)} / {scored} | {c.get('near_miss', 0)} | "
-            f"{c.get('fail', 0)} | {c.get('unscored', 0)} |"
+            f"{c.get('fail', 0)} | {c.get('unscored', 0)} | {flagged} |"
         )
     lines += [
         "",
         f"*Passed* is out of the automatically scored questions; *Unscored* "
         f"are open-ended answers (proofs, explanations) left for manual "
-        f"review, and *Near miss* counts as a fail. With {total_q} questions "
+        f"review, and *Near miss* counts as a fail. *Flagged* answers "
+        f"degenerated (a repetition loop, the wrong language, or no answer), "
+        f"scored or not; see the compare report. With {total_q} questions "
         f"one question is a large step, so a gap of one or two between files "
         f"is noise; use this to spot where a category breaks, and KL "
         f"divergence / perplexity to rank close files.",

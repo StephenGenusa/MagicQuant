@@ -414,8 +414,8 @@ def test_compare_scores_keep_unscored_out_of_denominator(tmp_path):
     card = generate_model_card(_two_tier_run(), "X",
                                inputs=collect_card_inputs(tmp_path, hash_files=False))
     section = card.split("## Task-level validation")[1]
-    assert "| `M-Q6_K.gguf` | reference | — | 2 / 3 | 0 | 1 | 1 |" in section
-    assert "| `ref-other-Q8_0.gguf` | reference | — | 1 / 3 | 1 | 1 | 1 |" in section
+    assert "| `M-Q6_K.gguf` | reference | — | 2 / 3 | 0 | 1 | 1 | — |" in section
+    assert "| `ref-other-Q8_0.gguf` | reference | — | 1 / 3 | 1 | 1 | 1 | — |" in section
 
 
 
@@ -442,3 +442,16 @@ def test_kl_scores_listed_for_every_file_including_references(tmp_path):
     assert "measured by `magicquant kl-score` against `ref-F16.gguf`" in files
     # The tier table falls back to the shipped file's kl-score numbers.
     assert "0.0134" in _row(card, "Q8")
+
+
+
+def test_compare_flags_column_counts_degenerate_answers(tmp_path):
+    run = tmp_path / "comparisons" / "20261101T000000"
+    d = run / "raw_responses" / "M-Q4.gguf"
+    d.mkdir(parents=True)
+    for i, (st, flags) in enumerate([("pass", []), ("unscored", ["loop"]), ("fail", ["loop"])]):
+        (d / f"Q{i:02d}.json").write_text(json.dumps({"primary_status": st, "flags": flags}))
+    (run / "meta.json").write_text("{}")
+    card = generate_model_card(_two_tier_run(), "X",
+                               inputs=collect_card_inputs(tmp_path, hash_files=False))
+    assert "| `M-Q4.gguf` | reference | — | 1 / 2 | 0 | 1 | 1 | 2 |" in card

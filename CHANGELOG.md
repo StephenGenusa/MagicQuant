@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Added (2026-11-01 — fork: compare flags degenerate answers, "How to read this")
+
+- **Degenerate answers are flagged.** New `magicquant/compare/degeneration.py`
+  flags three kinds of answer: a repetition loop (a 40-character passage
+  repeated 10+ times outside code blocks), the wrong language (for questions
+  with `response_language`), or an empty answer. Hitting the token limit is
+  deliberately not a flag. Thresholds were calibrated on all 476 saved
+  Llama-3.2-1B answers: healthy answers repeat a passage at most 4 times,
+  degenerate ones 79-330 times.
+- **The flags catch failures the other measures miss.** bartowski Q8_0 looped
+  on the Russian question despite the lowest KLD of any quant (0.0013).
+  MagicQuant Q4's unscored proof loops ("Since a is an integer…" ×79), which
+  its 15/18 score hid.
+- **Where flags appear:**
+  - The HTML summary has a Flagged column, and flagged answers get ⚠ badges
+    in the side-by-side responses.
+  - The Markdown report has a Flagged column and a "Flagged answers" table.
+  - The raw JSON records `flags` and `response_language`.
+  - The card's compare table has a Flagged column.
+- **Reports open with "How to read this",** explaining Score (and why a
+  1–2 question gap is noise), Mean KLD and its noise floor, Consistency at
+  temperature 0, and Flagged. The summary note below the table now only
+  states where PPL/KLD came from, instead of repeating the scoring rules.
+- **README comparison screenshot refreshed.**
+- (2026-11-01; files: magicquant/compare/degeneration.py [new],
+  magicquant/compare/output.py, magicquant/compare/cmd_compare.py,
+  magicquant/utils/model_card.py, tests/compare/test_degeneration.py [new],
+  tests/test_model_card_sections.py, README.md, CLAUDE.md, CHANGELOG.md;
+  verified: full suite 1502 passed/30 skipped; `ruff check --select F` clean;
+  compare rerun, report and screenshot inspected.)
+
 ### Fixed (2026-11-01 — fork: compare scoring review, KL for every file)
 
 I checked every scored answer of the Llama-3.2-1B compare run against its

@@ -26,6 +26,7 @@ from magicquant.compare.output import (
 from magicquant.compare.inference import run_inference_batch
 from magicquant.compare.passages import build_prompt, estimate_tokens, load_passage
 from magicquant.compare.scoring import compute_consistency, score_response
+from magicquant.compare.degeneration import detect_flags
 
 
 # ── Default prompts ────────────────────────────────────────────────────────────
@@ -300,6 +301,7 @@ def _run_model(
                 consistency=consistency,
                 primary_status=primary_status,
                 primary_response=cleaned[0] if cleaned else "(no response)",
+                flags=detect_flags(cleaned[0] if cleaned else None, q),
             )
 
     return results

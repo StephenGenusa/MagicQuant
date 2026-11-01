@@ -256,6 +256,12 @@ GGUFs containing these types load only on the fork, not stock llama.cpp.
   scored by EXECUTION (`sql_exec`, sandboxed SQLite, any-column match) with a
   test table that separates the right answer from plausible wrong ones.
   Verify a new question by re-scoring saved `raw_responses` answers by hand.
+- **compare flags degenerate answers** (`compare/degeneration.py`): repetition
+  loop (40-char passage x10+, code excluded), wrong language, empty. Hitting
+  the token limit is NOT a flag. Thresholds were calibrated on real answers
+  (healthy <= 4 repeats, degenerate 79-330); re-calibrate on saved
+  `raw_responses` before changing them. Side-by-side answers matter: a file
+  with the lowest KLD still looped on one question.
 - **KL base logits are huge** (~vocab x scored tokens x 2 bytes: 37 GB for a
   128k vocab on wikitext-2 at ctx 512). A measured search writes one per run
   (KL is on by default for probes); `kl-score --base-logits` reuses a file
