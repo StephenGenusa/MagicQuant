@@ -2,6 +2,238 @@
 
 ## [Unreleased]
 
+### Fixed (2026-11-01 — fork: compare scoring review, KL for every file)
+
+I checked every scored answer of the Llama-3.2-1B compare run against its
+question. 14 of 18 auto-scored questions were right. These were not:
+
+- **Q04 (multilingual) penalised a correct answer.** The system prompt is
+  English and the question never asked for Chinese, so "Beijing" was failed
+  against the keyphrase 北京; the F16 reference failed it too. Multilingual
+  prompts now state their answer language (Q04 Chinese, Q11 Russian; Q19
+  already asked for Persian) and carry `response_language`. A schema test
+  requires both.
+- **Q08 / numeric extraction.** The last-number heuristic read "$0.05 or 5
+  cents" as 5, so correct answers failed.
+  - Numeric prompts now ask for a final `Answer: <number>` line (`Ответ:` in
+    Russian), and `extract_declared_answer` reads it first.
+  - `unit: dollars` questions read "N cents" as dollars.
+  - Number parsing tells thousands separators from decimal commas
+    (`1,191.02` vs `1,6`; "11,67" used to read as 1167).
+- **Q15 (SQL) was scored backwards.** The keyphrase rubric (SELECT + MAX)
+  passed queries that return the HIGHEST salary and failed a correct
+  window-function answer. The new `sql_exec` scoring type runs the query in a
+  sandboxed in-memory SQLite database (ATTACH/DETACH and writes denied,
+  time-limited) against five test tables. A query passes when some result
+  column holds exactly the expected value. The fifth table has duplicates
+  with uneven counts; it catches "second most common salary" queries that
+  coincide with the right answer elsewhere, which F16 and bartowski Q8_0
+  produced.
+- **Unscored answers counted as failures.** Open-ended questions (proof,
+  explanation) were counted as failures in every report denominator, so
+  every model showed 0/1. They are now counted separately (`—` in an
+  all-unscored mode, plus a summary note).
+- **New `magicquant kl-score` (`magicquant/kl_score.py`).** It measures PPL
+  and KL divergence (mean/median/p99/p99.9, RMS Δp, same-top-token) for
+  every GGUF in a directory against one reference, with one build, corpus
+  and context, and writes `kl_scores.json`.
+  - `--base-logits` reuses an existing logits file and never deletes it.
+  - Logits it creates itself are removed unless `--keep-base-logits`.
+  - `compare` adds a Mean KLD column and takes reference files' PPL from it.
+    `card` lists PPL/KLD/p99/same-top-token for every file, references
+    included, and fills tier-table KL from it.
+- **Final Llama-3.2-1B result** (auto-scored /18; mean KLD vs F16):
+
+  | File | Score | Mean KLD |
+  |---|---:|---:|
+  | MQ-Q4 | 15 | 0.0286 |
+  | bartowski Q8_0 | 14 | 0.0013 |
+  | F16 | 13 | 0.0004 (the noise floor) |
+  | MQ-Q8 | 13 | 0.0134 |
+  | MQ-Q6 | 13 | 0.0066 |
+  | MQ-Q5 | 13 | 0.0158 |
+  | bartowski Q4_K_M | 11 | 0.0374 |
+
+  Re-scoring every saved answer with the final scorer reproduces every
+  status.
+- (2026-11-01; files: magicquant/compare/scoring.py,
+  magicquant/compare/output.py, magicquant/compare/cmd_compare.py,
+  magicquant/kl_score.py [new], magicquant/__main__.py,
+  magicquant/utils/model_card.py, magicquant/data/questions.yaml, README.md,
+  tests/compare/test_scoring.py, tests/compare/test_schema.py,
+  tests/test_kl_score.py [new], tests/test_compare_identity.py,
+  tests/test_model_card_sections.py, CHANGELOG.md; verified: full suite 1494
+  passed/30 skipped; `ruff check --select F` clean.)
+
+### Fixed (2026-11-01 — fork: end-to-end Llama-3.2-1B run)
+
+Found by running search → generate → compare → card on Llama-3.2-1B-Instruct.
+The run used bartowski's llama.cpp-converted F16 as the source, and that
+F16 measured PPL 14.0067 ± 0.104 on this build.
+
+- **A tied-embedding model aborted the v1 search.** A llama.cpp-converted
+  tied model has no `output.weight`, but `_detect_search_groups` always
+  added group H, so the strict probe raised `ProbeMeasurementError`
+  ("contains no tensors classified into that group"). Core groups are now
+  included only when the model has tensors in them; MoE/SSM groups already
+  worked this way. llama.cpp reuses `token_embd` as the head, so group E's
+  scheme and probe cover it.
+- **`generate` ignored the search's imatrix.** Every imatrix-weighted tier
+  (K-quants, IQ family) shipped as a different file from the one measured.
+  It now enables the same imatrix whenever
+  `search_results.json["measurement"]["imatrix_active"]`, and exits with an
+  error if it can't. New flags: `--imatrix-corpus`, plus `--no-imatrix` to
+  opt out (with a warning). After the fix, all four shipped files'
+  verification PPL equals their measured PPL exactly.
+- **`compare` attributed PPL by filename substring.** A reference
+  `ref-bartowski-Q8_0.gguf` showed MagicQuant's Q8 tier PPL (14.222; its own
+  is 14.014). PPL is now matched by identity: the file's own verified PPL
+  from `generated.json`, then its `magicquant.group_schemes`, then the
+  source baseline for ≥14 bpw files. Anything else shows none. The quant
+  label now uses the last filename match, so `Model-f16-Q4_K_M` reads
+  Q4_K_M, not F16.
+- **`rope_freqs.weight` was unclassified.** llama.cpp emits it for every
+  Llama 3.x model. It now classifies as group N (F32 passthrough) instead of
+  tripping the unknown-tensor warning.
+- **Card fixes from the real run:**
+  - It read `predictor_tracking` as a bool, but it is persisted as
+    `{"is_tracking", "tau", "n_pairs"}`, and the card crashed on it. It now
+    shows the verdict plus τ.
+  - It claimed "KL divergence: measured" when BF16 logits fed only the
+    probes. It now says so.
+  - A tier dominated on both size and PPL by a smaller tier is marked "not
+    recommended", listed in Caveats, and skipped by the usage snippet. This
+    run's Q8 is beaten by Q6.
+  - Compare results are summarised per file from `raw_responses`, with
+    unscored (manual-review) questions kept out of the pass denominator.
+- **Known gaps, not fixed:** MagicQuant's safetensors reader omits
+  `rope_freqs.weight` (PPL change at ctx 512: 0.015) and writes a separate
+  `output.weight` for tied models (+0.49 GiB on this model). Building from a
+  llama.cpp-converted GGUF avoids both. The v1 search seeds no Q8_0
+  incumbent, so its Q8 band can come out dominated.
+- (2026-11-01; files: magicquant/gguf/tensor_groups.py,
+  magicquant/orchestrator.py, magicquant/__main__.py,
+  magicquant/compare/cmd_compare.py, magicquant/compare/output.py,
+  magicquant/utils/model_card.py, tests/test_tensor_groups.py,
+  tests/test_search_groups.py, tests/test_generate_imatrix.py [new],
+  tests/test_compare_identity.py [new], tests/test_model_card_sections.py,
+  CHANGELOG.md; verified: full suite 1473 passed/30 skipped;
+  `ruff check --select F` clean; the Llama-3.2-1B run completed end to end.)
+
+### Added (2026-11-01 — fork: model card rebuilt, review findings C5–C13, P1–P9, R1–R3, D-b1–D-b6)
+
+- `magicquant card` now covers every remaining finding of
+  `docs/audits/2026-11-01-model-card-review.md`. `generate_model_card` gains
+  keyword-only `inputs` (from the new `collect_card_inputs(output_dir)`:
+  shipped `*.gguf` files with exact bytes, SHA-256 and provenance KVs,
+  `generated.json`, `v2_results.json`, the latest `comparisons/` run) and
+  `front_matter`. New sections:
+  - HF YAML front matter (P1): `base_model` when the name is `owner/name`,
+    plus `base_model_relation: quantized`, license, `quantized_by`,
+    `pipeline_tag`, language and tags.
+  - "Which file should I pick?" (P2).
+  - A file table matched to tiers via `generated.json`, then the GGUF's
+    `magicquant.group_schemes`, then v2 `final_model` (P2).
+  - v2 `BUDGET-*` rows (C5), with the block's own baseline. A fresh v2 run
+    no longer renders an empty table, and an empty run says "no tiers
+    recorded".
+  - Mean/p90 KLD columns, plus p99 / same-top-token when recorded (C6).
+  - ΔPPL absolute and %, and PPL to 3 decimals ± `ppl_err` (C7, R2).
+  - An evaluation-method section that prints ‹not recorded› when conditions
+    are absent (C7).
+  - A group legend (R1) and a note that BF16 is stored as F16, listing
+    per-file fallbacks (C8).
+  - A ratio-to-BF16 column and current-band translation in the legacy banner
+    (C9).
+  - A double-quant callout (C10).
+  - A Caveats section listing every degraded flag. It distinguishes "None
+    recorded" from "Not recorded (older results file)" (C11).
+  - An intro generated from the groups present and the search algorithm
+    (C12).
+  - Compatibility notes derived from scheme categories (P3), Provenance (P4),
+    a speed column when benchmarked (P5), task validation from `compare`
+    (P6), all measured candidates with Pareto marks (P7), and a usage snippet
+    (P9). Rows are sorted by size (R3).
+
+  `cmd_card` gains `--license`, `--quantized-by`, `--pipeline-tag`,
+  `--language`, `--no-front-matter`, `--no-hash`, and an upload gate
+  (`upload_blockers`, P8): `--upload` refuses an unverified card unless
+  `--allow-unverified-card` is passed, and a double-quantized one unless
+  `--acknowledge-double-quant` is passed.
+- New persisted provenance (D-b1–D-b6, C10). All of it is additive, and no
+  `config_key`, `_serialize_measurement` order, `tiered`/`tiered_survivors`
+  split or `v2_results.json` key set changed.
+  - `search_results.json` gains the tail keys `baseline_size_gb` and
+    `run_info` (MagicQuant version, git commit, argv; new
+    `magicquant/utils/provenance.py`).
+  - `_parse_kl_output` keeps `median_kl`/`p95_kl`/`p99_kl`/`p999_kl` and,
+    on builds that print them, `rms_dp` and `same_top_p` (± err), inside the
+    measurement's nested `kl` dict.
+  - The writer appends two GGUF KVs after all existing keys:
+    `magicquant.source_precision` (`{"dequantized", "source_types"}`) and
+    `magicquant.fallbacks` (per-reason count + example). Both are always
+    written, so a clean file is distinguishable from an older one.
+  - `generate_hybrid_model` records each shipped file (tier, config_key,
+    bytes, verification PPL) in a new `generated.json` sidecar.
+  - `naming.hf_label_for_tier()` is now public.
+  - `tests/test_measured_search_checkpoint_resume.py`'s tail-key pin now
+    covers the two appended keys.
+- Still open by design: the report's section 3(c) items (calibration/eval
+  corpus SHA-256, long-context quality, runtime-memory estimates, per-backend
+  throughput) need new measurement work, and a `stale` tier status needs a
+  resume/binary-mismatch record that the results do not persist.
+- (2026-11-01; files: magicquant/utils/model_card.py,
+  magicquant/utils/naming.py, magicquant/utils/provenance.py [new],
+  magicquant/utils/llamacpp.py, magicquant/gguf/writer.py,
+  magicquant/orchestrator.py, magicquant/__main__.py, README.md,
+  docs/audits/2026-11-01-model-card-review.md, tests/test_model_card.py,
+  tests/test_model_card_sections.py [new],
+  tests/test_card_provenance_persistence.py [new],
+  tests/test_llamacpp_measure.py,
+  tests/test_measured_search_checkpoint_resume.py, CHANGELOG.md; verified:
+  full suite 1459 passed/30 skipped; `ruff check --select F` clean;
+  `tests/integration/test_encoder_parity.py` 9 passed (ran, not skipped);
+  front matter parsed with PyYAML; qwopus card rendered and inspected.)
+
+### Fixed (2026-11-01 — fork: model card honesty, review findings C1–C4)
+
+- `magicquant card` now discloses that filename quant labels are size bands
+  (finding C4). `generate_name` expands tier `Q5` to a `Q5_K_M` filename
+  suffix so HuggingFace shows a badge. A tier is a size band, not a recipe,
+  though: the qwopus "Q5" is mostly IQ4_NL/MXFP4_MOE, and its "Q6" holds no
+  Q6_K. The card now carries an always-present callout saying so, plus a
+  **Filename label** column per tier. The label comes from the new
+  `naming.hf_label_for_tier()`, which reads the same table `generate_name`
+  uses, so the card and the filenames can't drift apart. Filenames are
+  unchanged; renaming them is a separate decision, because downstream tools
+  consume them. (2026-11-01; files: magicquant/utils/model_card.py,
+  magicquant/utils/naming.py, tests/test_model_card.py, CHANGELOG.md;
+  verified: `tests/test_model_card.py` + `tests/test_naming.py` 20 passed
+  [2 new C4 tests]; full suite 1425 passed/30 skipped; `ruff check --select F`
+  clean; qwopus fixture card rendered and inspected.)
+- `magicquant card` no longer presents unmeasured numbers as measured ones
+  (findings C1–C3 of `docs/audits/2026-11-01-model-card-review.md`).
+  **C1:** the baseline line now reads `baseline_provenance`. A `fabricated` /
+  `prediction-only` / `unknown` baseline (the orchestrator's 5.0 placeholder)
+  prints as "not measured (provenance: …)", and no Loss figure is derived
+  from it. Files that predate provenance tracking keep their figures,
+  labelled "provenance not recorded". **C2:** every tier row has a Status
+  column (`measured`, `measured (KL timed out)`, `invalid measurement`,
+  `predicted (not built/measured)`, `not measured`), joined to
+  `measurements` via `naming.config_key`. Unmeasured rows show no PPL or
+  Loss, and their size is marked `≈` as a prediction. The intro claims
+  "measured sensitivity" only when `probing_provenance == "measured"`, and
+  otherwise prints a provenance warning. **C3:** `size_gb` is
+  bytes / 1024³, so the column is now `Size (GiB)`, with a decimal
+  `Size (GB)` column beside it (the unit HuggingFace shows). For example,
+  qwopus "Q6" reads 23.15 GiB / 24.86 GB, where it used to read "23.15 GB".
+  A Loss definition and units legend follows the table. Read-side only: no
+  persisted format changed. (2026-11-01; files: magicquant/utils/model_card.py,
+  tests/test_model_card.py, CHANGELOG.md; verified:
+  `tests/test_model_card.py` 13 passed [5 existing + 8 new]; full suite
+  1423 passed/30 skipped; `ruff check --select F` clean; qwopus fixture card
+  rendered and inspected.)
+
 ### Added (2026-09-11 streamed-bytes allocation)
 
 - `magicquant/gguf/tensor_groups.py`'s classifier gains rules for

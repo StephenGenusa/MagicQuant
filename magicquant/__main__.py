@@ -502,6 +502,27 @@ def cmd_generate(args: argparse.Namespace) -> None:
         adapter_path=settings.adapter_path,
     )
 
+    # Build with the imatrix the search measured with. Without it, every
+    # imatrix-weighted scheme (K-quants, IQ family) would encode differently
+    # from the candidate that was measured, so the shipped file would not be
+    # the file the card's numbers describe.
+    search_used_imatrix = bool(
+        (results.get("measurement") or {}).get("imatrix_active")
+    )
+    if getattr(args, "no_imatrix", False):
+        if search_used_imatrix:
+            print("Warning: --no-imatrix, but the search measured its "
+                  "candidates WITH an imatrix; these files will differ from "
+                  "the measured ones.")
+    elif search_used_imatrix or settings.use_imatrix:
+        print(f"Using imatrix (corpus: {settings.imatrix_corpus or 'bundled default'})")
+        if not orchestrator.enable_imatrix(settings.imatrix_corpus):
+            print("Error: could not load/capture the imatrix the search used. "
+                  "Pass --imatrix-corpus <the search's corpus>, or "
+                  "--no-imatrix to build unweighted files that will not "
+                  "match the measured candidates.")
+            sys.exit(1)
+
     verify = args.verify if getattr(args, "verify", None) else settings.verify
 
     if verify:
@@ -668,7 +689,11 @@ def cmd_qat_merge(args: argparse.Namespace) -> None:
 
 def cmd_card(args: argparse.Namespace) -> None:
     """Generate a HuggingFace model card from search_results.json (local-only)."""
-    from magicquant.utils.model_card import generate_model_card
+    from magicquant.utils.model_card import (
+        collect_card_inputs,
+        generate_model_card,
+        upload_blockers,
+    )
 
     output_dir = Path(args.output_dir)
     results_file = output_dir / "search_results.json"
@@ -687,7 +712,29 @@ def cmd_card(args: argparse.Namespace) -> None:
         base_name = Path(args.model).stem
     else:
         base_name = "model"
-    card = generate_model_card(results, base_model_name=base_name)
+    # Shipped GGUFs (sizes, SHA-256, provenance KVs), generated.json,
+    # v2_results.json and the latest compare run, when present.
+    inputs = collect_card_inputs(
+        output_dir, hash_files=not getattr(args, "no_hash", False),
+    )
+    front_matter = None
+    if not getattr(args, "no_front_matter", False):
+        front_matter = {
+            "license": getattr(args, "license", None),
+            "quantized_by": getattr(args, "quantized_by", None),
+            "pipeline_tag": getattr(args, "pipeline_tag", None),
+            "languages": getattr(args, "language", None) or [],
+        }
+        if not front_matter["license"]:
+            print("Note: no --license given; the card's front matter has no "
+                  "license. Use the base model's license.")
+        if "/" not in base_name:
+            print("Note: --base-model is not an owner/name repo id, so the "
+                  "front matter cannot link the base model.")
+    card = generate_model_card(
+        results, base_model_name=base_name,
+        inputs=inputs, front_matter=front_matter,
+    )
 
     card_path = output_dir / "README.md"
     card_path.write_text(card, encoding="utf-8")
@@ -697,6 +744,24 @@ def cmd_card(args: argparse.Namespace) -> None:
         repo = getattr(args, "repo", None)
         if not repo:
             print("Error: --upload requires --repo <owner/name>")
+            sys.exit(1)
+        # Honesty gate (model-card review P8/C10): a card resting on
+        # unmeasured numbers or a double-quantized source is not published
+        # without an explicit, informed override.
+        unverified, double_quant = upload_blockers(results, inputs)
+        if unverified and not getattr(args, "allow_unverified_card", False):
+            print("Error: refusing to upload a card with unverified numbers:")
+            for reason in unverified:
+                print(f"  - {reason}")
+            print("Pass --allow-unverified-card to upload it anyway.")
+            sys.exit(1)
+        if double_quant and not getattr(args, "acknowledge_double_quant", False):
+            print("Error: refusing to upload: these files are double-quantized "
+                  "(built from an already-quantized source):")
+            for name in double_quant:
+                print(f"  - {name}")
+            print("The card discloses this. Pass --acknowledge-double-quant "
+                  "to upload it anyway.")
             sys.exit(1)
         try:
             from huggingface_hub import upload_file
@@ -711,6 +776,23 @@ def cmd_card(args: argparse.Namespace) -> None:
             repo_type="model",
         )
         print(f"Uploaded model card to https://huggingface.co/{repo}")
+
+
+def cmd_kl_score(args: argparse.Namespace) -> None:
+    """Score every GGUF in --output-dir against one reference's logits."""
+    from magicquant.kl_score import score_directory
+
+    try:
+        score_directory(
+            args.output_dir, args.reference,
+            llamacpp_path=args.llamacpp_path,
+            base_logits=args.base_logits,
+            keep_base_logits=args.keep_base_logits,
+            ctx_size=args.ctx_size,
+        )
+    except (FileNotFoundError, RuntimeError) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
 
 
 def cmd_dry_run(args: argparse.Namespace) -> None:
@@ -1229,6 +1311,18 @@ def main() -> None:
         default=None,
         help="Path to LoRA adapter directory",
     )
+    generate_parser.add_argument(
+        "--imatrix-corpus", default=None,
+        help="Calibration corpus for the imatrix (default: "
+             "MAGICQUANT_IMATRIX_CORPUS or the bundled default). Must be the "
+             "corpus the search used, or the files will not match what was "
+             "measured.",
+    )
+    generate_parser.add_argument(
+        "--no-imatrix", dest="no_imatrix", action="store_true",
+        help="Build without an imatrix even if the search used one (the "
+             "files will then differ from the measured candidates)",
+    )
     generate_parser.set_defaults(func=cmd_generate)
 
     # ── imatrix ───────────────────────────────────────────────────────────────
@@ -1379,7 +1473,9 @@ def main() -> None:
         "--model", help="Source model path (used to derive the card title)",
     )
     card_parser.add_argument(
-        "--base-model", help="Base model name to show on the card",
+        "--base-model",
+        help="Base model to show on the card; an owner/name repo id is also "
+             "linked as base_model in the front matter",
     )
     card_parser.add_argument(
         "--upload", action="store_true",
@@ -1388,7 +1484,76 @@ def main() -> None:
     card_parser.add_argument(
         "--repo", help="Target HF repo id (owner/name) for --upload",
     )
+    card_parser.add_argument(
+        "--license", help="License for the front matter (use the base model's)",
+    )
+    card_parser.add_argument(
+        "--quantized-by", dest="quantized_by",
+        help="Who produced the quants (front matter quantized_by)",
+    )
+    card_parser.add_argument(
+        "--pipeline-tag", dest="pipeline_tag", default="text-generation",
+        help="HF pipeline tag for the front matter (default: text-generation)",
+    )
+    card_parser.add_argument(
+        "--language", action="append",
+        help="Language code for the front matter (repeatable)",
+    )
+    card_parser.add_argument(
+        "--no-front-matter", dest="no_front_matter", action="store_true",
+        help="Omit the HuggingFace YAML front matter",
+    )
+    card_parser.add_argument(
+        "--no-hash", dest="no_hash", action="store_true",
+        help="Skip SHA-256 of the GGUFs in --output-dir (faster on large files)",
+    )
+    card_parser.add_argument(
+        "--allow-unverified-card", dest="allow_unverified_card",
+        action="store_true",
+        help="Allow --upload when the baseline or a tier is not measured",
+    )
+    card_parser.add_argument(
+        "--acknowledge-double-quant", dest="acknowledge_double_quant",
+        action="store_true",
+        help="Allow --upload when the files were built from a quantized source",
+    )
     card_parser.set_defaults(func=cmd_card)
+
+    # ── kl-score ──────────────────────────────────────────────────────────────
+    kl_parser = subparsers.add_parser(
+        "kl-score",
+        help="Measure PPL + KL divergence of every GGUF in a directory "
+             "against one reference model (writes kl_scores.json)",
+    )
+    kl_parser.add_argument(
+        "--output-dir", default="./output",
+        help="Directory whose *.gguf files are scored (default: ./output)",
+    )
+    kl_parser.add_argument(
+        "--reference", required=True,
+        help="Reference model (the BF16/F16 source) whose logits every file "
+             "is compared against",
+    )
+    kl_parser.add_argument(
+        "--base-logits", default=None,
+        help="Reuse an existing reference logits file (from llama-perplexity "
+             "--kl-divergence-base on the same corpus and ctx) instead of "
+             "regenerating it; it is never deleted",
+    )
+    kl_parser.add_argument(
+        "--keep-base-logits", action="store_true",
+        help="Keep the reference logits this command creates (large: "
+             "~vocab x tokens x 2 bytes)",
+    )
+    kl_parser.add_argument(
+        "--ctx-size", type=int, default=512,
+        help="Context size; must match --base-logits if given (default: 512)",
+    )
+    kl_parser.add_argument(
+        "--llamacpp-path", default=None,
+        help="Path to llama.cpp directory (auto-detect if omitted)",
+    )
+    kl_parser.set_defaults(func=cmd_kl_score)
 
     # ── compare ───────────────────────────────────────────────────────────────
     compare_parser = subparsers.add_parser(

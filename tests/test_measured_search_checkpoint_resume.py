@@ -761,7 +761,11 @@ def test_results_json_has_llamacpp_binary_and_arch_check_keys(tmp_path, monkeypa
     assert results["llamacpp_arch_check"] in ("supported", "unknown", "skipped")
     # Additive, tail-appended -- same key-order contract as
     # _serialize_measurement's per-measurement fields.
-    assert list(results.keys())[-2:] == ["llamacpp_binary", "llamacpp_arch_check"]
+    # Tail-append contract: the 2026-11 model-card keys (baseline_size_gb,
+    # run_info) were appended AFTER these two, never inserted before them.
+    assert list(results.keys())[-4:] == [
+        "llamacpp_binary", "llamacpp_arch_check", "baseline_size_gb", "run_info",
+    ]
 
 
 def test_checkpoint_has_llamacpp_binary_and_arch_check_keys(tmp_path, monkeypatch):

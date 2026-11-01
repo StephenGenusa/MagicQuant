@@ -50,6 +50,41 @@ _NUMBER_RE = re.compile(r"-?\d[\d,]*\.?\d*(?:[eE][+-]?\d+)?")
 _FRACTION_RE = re.compile(r"-?\d+\s*/\s*\d+")
 
 
+_THOUSANDS_RE = re.compile(r"-?\d{1,3}(?:,\d{3})+(?:\.\d+)?")
+
+
+def _parse_number(raw: str) -> float:
+    """Parse a matched number, telling thousands separators ("1,191.02",
+    "12,000") from a decimal comma ("1,6", the Russian/European style).
+    Comma groups of exactly three digits are thousands; a single other
+    comma with no decimal point is a decimal comma."""
+    if _THOUSANDS_RE.fullmatch(raw):
+        return float(raw.replace(",", ""))
+    if raw.count(",") == 1 and "." not in raw:
+        return float(raw.replace(",", "."))
+    return float(raw.replace(",", ""))
+
+
+# A declared final answer ("Answer: 0.05", "Ответ: 1.6", "**Answer:** $847").
+# Prompts for exact_numeric questions ask for this line; when present it beats
+# the last-number heuristic, which misreads restatements like "$0.05 or 5 cents".
+_ANSWER_LINE_RE = re.compile(
+    r"(?:answer|ответ|پاسخ|答案)\s*\**\s*[:：]\s*\**\s*[$€£]?\s*(-?\d[\d,]*\.?\d*(?:[eE][+-]?\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def extract_declared_answer(text: str) -> Optional[float]:
+    """Return the number on the LAST "Answer: <number>" line, or None."""
+    matches = _ANSWER_LINE_RE.findall(text)
+    for raw in reversed(matches):
+        try:
+            return _parse_number(raw)
+        except ValueError:
+            continue
+    return None
+
+
 def extract_last_number(text: str) -> Optional[float]:
     """Return the last number in *text*, scanning backwards line by line.
 
@@ -65,7 +100,7 @@ def extract_last_number(text: str) -> Optional[float]:
         if matches:
             for raw in reversed(matches):
                 try:
-                    return float(raw.replace(",", ""))
+                    return _parse_number(raw)
                 except ValueError:
                     continue
     return None
@@ -93,8 +128,18 @@ def _extract_all_numbers_and_fractions(text: str) -> list[float]:
 
 # ── Individual scorers ─────────────────────────────────────────────────────────
 
+_CENTS_RE = re.compile(r"(?<![\d.$])(\d+(?:\.\d+)?)\s*(?:cents?|¢)", re.IGNORECASE)
+
+
+def _cents_to_dollars(text: str) -> str:
+    """Rewrite "5 cents" as "$0.05" so a dollar answer restated in cents
+    ("$0.05 or 5 cents") is read in the question's unit."""
+    return _CENTS_RE.sub(lambda m: f"${float(m.group(1)) / 100:g}", text)
+
+
 def score_exact_numeric(response: str, question: dict) -> ScoreResult:
-    """Extract last number, compare to ground_truth with tolerance."""
+    """Extract the declared "Answer: <n>" (else the last number) and compare
+    to ground_truth with tolerance."""
     ground_truth = float(question["ground_truth"])
     tol = question.get("tolerance") or {}
     abs_tol = float(tol.get("abs", 0))
@@ -105,7 +150,11 @@ def score_exact_numeric(response: str, question: dict) -> ScoreResult:
         return ScoreResult("fail", "Response truncated inside <think> block",
                            None, ground_truth)
 
-    extracted = extract_last_number(scorable)
+    if question.get("unit") == "dollars":
+        scorable = _cents_to_dollars(scorable)
+    extracted = extract_declared_answer(scorable)
+    if extracted is None:
+        extracted = extract_last_number(scorable)
     if extracted is None:
         return ScoreResult("fail", "No numeric answer found", None, ground_truth)
 
@@ -214,11 +263,93 @@ def score_none(_response: str, _question: dict) -> ScoreResult:
 
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 
+_SQL_FENCE_RE = re.compile(r"```(?:sql)?\s*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def _run_sql_case(query: str, setup: str, rows: list, timeout_s: float = 2.0):
+    """Run *query* against a fresh in-memory DB built from *setup* + *rows*.
+
+    Model output is untrusted: the authorizer denies ATTACH/DETACH (the only
+    way SQLite SQL reaches the filesystem) and any write to the table, and a
+    progress handler aborts runaway queries. Returns one set of distinct
+    values per result column ([{None}] for an empty result), or raises.
+    """
+    import sqlite3
+    import time
+
+    db = sqlite3.connect(":memory:")
+    try:
+        db.execute(setup)
+        if rows:
+            marks = ",".join("?" * len(rows[0]))
+            table = re.search(r"CREATE\s+TABLE\s+(\w+)", setup, re.I).group(1)
+            db.executemany(f"INSERT INTO {table} VALUES ({marks})", rows)
+
+        denied = {sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH,
+                  sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE,
+                  sqlite3.SQLITE_DELETE, sqlite3.SQLITE_DROP_TABLE,
+                  sqlite3.SQLITE_CREATE_TABLE, sqlite3.SQLITE_ALTER_TABLE}
+        db.set_authorizer(
+            lambda action, *a: sqlite3.SQLITE_DENY if action in denied else sqlite3.SQLITE_OK
+        )
+        deadline = time.monotonic() + timeout_s
+        db.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10_000)
+        result = db.execute(query).fetchall()
+    finally:
+        db.close()
+    if not result:
+        return [{None}]
+    return [{row[i] for row in result} for i in range(len(result[0]))]
+
+
+def score_sql_exec(response: str, question: dict) -> ScoreResult:
+    """Execute the answer's SQL against each ground_truth case.
+
+    ground_truth: list of {rows: [[...], ...], expected: value-or-null};
+    sql_setup: the CREATE TABLE statement. A case passes when the query's
+    result has a column whose values are exactly {expected} (None = no
+    row, or a column of NULLs). Any column, so "SELECT salary, rank ..." and
+    "SELECT MAX(salary)" are judged alike.
+    """
+    scorable, truncated = _strip_think(response)
+    cases = question["ground_truth"]
+    if truncated:
+        return ScoreResult("fail", "Response truncated inside <think> block", None, cases)
+    blocks = [b.strip() for b in _SQL_FENCE_RE.findall(scorable) if b.strip()]
+    query = next((b for b in blocks if re.search(r"\bselect\b", b, re.I)), None)
+    if query is None:
+        return ScoreResult("fail", "No SQL query found", None, cases)
+    query = query.rstrip().rstrip(";")
+    if ";" in query:
+        return ScoreResult("fail", "Multiple SQL statements; expected one query", query, cases)
+
+    failures = []
+    for i, case in enumerate(cases, 1):
+        want = case.get("expected")
+        label = case.get("label", f"case {i}")
+        try:
+            got = _run_sql_case(query, question["sql_setup"], case.get("rows") or [])
+        except Exception as exc:  # noqa: BLE001 -- untrusted SQL, any error fails
+            failures.append(f"{label}: SQL error: {exc}")
+            continue
+        if {want} not in got:
+            shown = [sorted(c, key=str) for c in got]
+            failures.append(f"{label}: got columns {shown}, expected {want!r}")
+    if failures:
+        return ScoreResult(
+            "fail",
+            f"{len(cases) - len(failures)}/{len(cases)} cases correct; " + "; ".join(failures),
+            query, cases,
+        )
+    return ScoreResult("pass", f"All {len(cases)} cases correct", query, cases)
+
+
 _SCORERS = {
     "exact_numeric":   score_exact_numeric,
     "quadratic_roots": score_quadratic_roots,
     "keyphrase":       score_keyphrase,
     "code_syntax":     score_code_syntax,
+    "sql_exec":        score_sql_exec,
     "none":            score_none,
 }
 

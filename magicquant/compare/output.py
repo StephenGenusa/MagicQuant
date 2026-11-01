@@ -33,8 +33,10 @@ class ModelInfo:
     architecture: str
     size_gb: float
     ppl: Optional[float] = None
+    mean_kld: Optional[float] = None  # vs the reference, from kl_scores.json
     total_score: int = 0
-    total_questions: int = 0
+    total_questions: int = 0      # automatically scored questions only
+    unscored_questions: int = 0   # open-ended answers left for manual review
     consistency_score: float = 1.0
     per_mode_scores: dict = field(default_factory=dict)
 
@@ -58,15 +60,33 @@ def _pct_color(passes: int, total: int) -> str:
     return "partial"
 
 
+def _kld_str(model: "ModelInfo") -> str:
+    return f"{model.mean_kld:.4f}" if model.mean_kld is not None else "—"
+
+
+def _summary_note(models: list) -> str:
+    unscored = max((m.unscored_questions for m in models), default=0)
+    note = ("Score counts automatically scored questions only"
+            + (f"; {unscored} open-ended answer(s) per model are left for manual "
+               f"review and are not counted as failures" if unscored else "")
+            + ". Near misses count as fails.")
+    if any(m.mean_kld is not None for m in models):
+        note += (" PPL and Mean KLD come from `magicquant kl-score` (one reference, "
+                 "same build, corpus and context), so every file is comparable.")
+    return note
+
+
 def _score_label(passes: int, total: int) -> str:
-    return f"{passes}/{total}"
+    # total == 0: every question in this mode is unscored (manual review);
+    # "0/0" or "0/1" would read as a failure.
+    return f"{passes}/{total}" if total else "—"
 
 
 def _quant_from_filename(filename: str) -> str:
     import re
-    m = re.search(r"\b(Q\d_K_[SM]|Q\d_K|Q\d_\d|IQ\d_\w+|BF16|F16|F32|MXFP4)\b",
-                  filename, re.IGNORECASE)
-    return m.group(1).upper() if m else "—"
+    found = re.findall(r"\b(Q\d_K_[SM]|Q\d_K|Q\d_\d|IQ\d_\w+|BF16|F16|F32|MXFP4)\b",
+                       filename, re.IGNORECASE)
+    return found[-1].upper() if found else "—"  # last label wins (see _discover_models)
 
 
 def populate_scores(
@@ -74,9 +94,14 @@ def populate_scores(
     questions: list[dict],
     results: dict[int, InferenceResult],
 ) -> None:
-    """Fill model.total_score, model.per_mode_scores, model.consistency_score."""
+    """Fill model.total_score, model.per_mode_scores, model.consistency_score.
+
+    Unscored questions (open-ended, manual review) are counted separately and
+    kept OUT of every denominator: they are not failures.
+    """
     passes = 0
     total = 0
+    unscored = 0
     consistencies = []
     mode_counts: dict[str, dict] = {}
 
@@ -85,21 +110,24 @@ def populate_scores(
         result = results.get(qid)
         if result is None:
             continue
+        mode = q.get("failure_mode", "unknown")
+        mode_counts.setdefault(mode, {"pass": 0, "total": 0})
+        if result.primary_status == "unscored":
+            unscored += 1
+            continue
         total += 1
         is_pass = result.primary_status == "pass"
         if is_pass:
             passes += 1
         consistencies.append(result.consistency)
 
-        mode = q.get("failure_mode", "unknown")
-        if mode not in mode_counts:
-            mode_counts[mode] = {"pass": 0, "total": 0}
         mode_counts[mode]["total"] += 1
         if is_pass:
             mode_counts[mode]["pass"] += 1
 
     model.total_score = passes
     model.total_questions = total
+    model.unscored_questions = unscored
     model.consistency_score = (sum(consistencies) / len(consistencies)) if consistencies else 1.0
     model.per_mode_scores = mode_counts
 
@@ -247,6 +275,7 @@ def generate_html(
     sum_header = (
         "<tr>"
         "<th>Model</th><th>bpw</th><th>Quant</th><th>Arch</th><th>PPL</th>"
+        "<th>Mean KLD</th>"
         "<th>Score</th><th>Consistency</th>"
         + "".join(f"<th>{e(m)}</th>" for m in active_modes)
         + "</tr>"
@@ -272,6 +301,7 @@ def generate_html(
             f"<td>{e(model.quant_type)}</td>"
             f"<td>{e(model.architecture)}</td>"
             f"<td>{ppl}</td>"
+            f"<td>{_kld_str(model)}</td>"
             f"<td>{score_cell}</td>"
             f"<td>{cons_pct}</td>"
             f"{mode_cells}"
@@ -279,6 +309,7 @@ def generate_html(
         )
     summary_table = (
         f"<table><thead>{sum_header}</thead><tbody>\n{sum_rows}</tbody></table>\n"
+        f"<p class='meta-header'>{e(_summary_note(models).replace('`', ''))}</p>\n"
     )
 
     # ── per-question comparison table ─────────────────────────────────────────
@@ -435,10 +466,10 @@ def generate_markdown(
                     if any(q.get("failure_mode") == m for q in questions)]
     lines.append("## Summary")
     lines.append("")
-    sum_header = ("| Model | bpw | Quant | Arch | PPL | Score | Consistency | "
+    sum_header = ("| Model | bpw | Quant | Arch | PPL | Mean KLD | Score | Consistency | "
                   + " | ".join(active_modes) + " |")
     lines.append(sum_header)
-    lines.append("|" + "|".join(["---"] * (7 + len(active_modes))) + "|")
+    lines.append("|" + "|".join(["---"] * (8 + len(active_modes))) + "|")
     for model in models:
         ppl = f"{model.ppl:.4f}" if model.ppl else "—"
         score = f"{model.total_score}/{model.total_questions}"
@@ -452,9 +483,9 @@ def generate_markdown(
         )
         lines.append(
             f"| {model.filename} | {model.bpw:.2f} | {model.quant_type} | "
-            f"{model.architecture} | {ppl} | {score} | {cons} | {mode_cols} |"
+            f"{model.architecture} | {ppl} | {_kld_str(model)} | {score} | {cons} | {mode_cols} |"
         )
-    lines += ["", "---", ""]
+    lines += ["", _summary_note(models), "", "---", ""]
 
     # Per-question sections
     for q in questions:

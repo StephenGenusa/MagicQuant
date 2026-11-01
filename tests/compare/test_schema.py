@@ -15,7 +15,8 @@ VALID_FAILURE_MODES = {
     "multi_hop", "code", "proof", "instruction_following",
 }
 VALID_SCORING_TYPES = {
-    "exact_numeric", "quadratic_roots", "keyphrase", "code_syntax", "none",
+    "exact_numeric", "quadratic_roots", "keyphrase", "code_syntax", "sql_exec",
+    "none",
 }
 
 
@@ -140,3 +141,40 @@ def test_quadratic_q13_roots(questions):
     assert len(roots) == 2
     assert math.isclose(sum(roots), 7 / 3, abs_tol=0.01), "sum of roots should = 7/3"
     assert math.isclose(roots[0] * roots[1], 2 / 3, abs_tol=0.01), "product of roots = 2/3"
+
+
+# The prompt must name its response language in that language's own script:
+# the system prompt is English, so an unstated language is a guess.
+_LANGUAGE_DIRECTIVE = {"zh": "中文", "ru": "русском", "fa": "فارسی"}
+
+
+def test_multilingual_questions_state_response_language(questions):
+    for q in questions:
+        if q["failure_mode"] != "multilingual":
+            continue
+        lang = q.get("response_language")
+        assert lang in _LANGUAGE_DIRECTIVE, (
+            f"Q{q['id']}: multilingual question needs response_language "
+            f"(one of {sorted(_LANGUAGE_DIRECTIVE)}), got {lang!r}"
+        )
+        assert _LANGUAGE_DIRECTIVE[lang] in q["prompt"], (
+            f"Q{q['id']}: prompt must explicitly ask for a {lang} answer"
+        )
+
+
+def test_sql_exec_questions_are_well_formed(questions):
+    for q in questions:
+        if q["scoring_type"] != "sql_exec":
+            continue
+        assert q.get("sql_setup", "").upper().startswith("CREATE TABLE"), q["id"]
+        cases = q["ground_truth"]
+        assert isinstance(cases, list) and cases, q["id"]
+        for case in cases:
+            assert "rows" in case and "expected" in case, (q["id"], case)
+
+
+def test_exact_numeric_prompts_ask_for_answer_line(questions):
+    for q in questions:
+        if q["scoring_type"] != "exact_numeric" or q["id"] == 20:  # Q20: "only the number"
+            continue
+        assert "Answer: <number>" in q["prompt"] or "Ответ: <число>" in q["prompt"], q["id"]

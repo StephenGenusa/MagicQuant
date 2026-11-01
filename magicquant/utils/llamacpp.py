@@ -1358,7 +1358,8 @@ class LlamaCppTools:
 
         Returns:
             {"mean_kl": float, "max_kl": float, "p90_kl": float, "ppl": float,
-            "ppl_err": float} (all but "mean_kl" omitted if absent from the
+            "ppl_err": float, plus the optional tail stats documented on
+            _parse_kl_output} (all but "mean_kl" omitted if absent from the
             output), or None if the run failed or the "Mean KLD" line
             couldn't be found. "ppl" is this pass's own "Mean PPL(Q)" --
             the evaluated (quantized) model's perplexity over the same
@@ -1602,8 +1603,11 @@ def _parse_kl_output(output: str) -> Optional[dict]:
 
     Returns:
         {"mean_kl": float, "max_kl": float, "p90_kl": float, "ppl": float,
-        "ppl_err": float} (all but "mean_kl" omitted if not present in the
-        output), or None if no "Mean ... KLD:" line is found.
+        "ppl_err": float, plus the optional tail stats "median_kl",
+        "p95_kl", "p99_kl", "p999_kl", "rms_dp"/"rms_dp_err" and
+        "same_top_p"/"same_top_p_err" (percent)} (all but "mean_kl" omitted
+        if not present in the output), or None if no "Mean ... KLD:" line is
+        found.
     """
     result: dict = {}
 
@@ -1630,6 +1634,34 @@ def _parse_kl_output(output: str) -> Optional[dict]:
     m = re.search(r"90\.0%\s+KLD:\s*(-?\d+\.?\d*)", output)
     if m:
         result["p90_kl"] = float(m.group(1))
+
+    # Additive tail statistics from the same block (all optional; nested
+    # inside the measurement's "kl" dict, so no persisted key ORDER moves).
+    # The upper percentiles are where quantization damage concentrates and
+    # the mean hides it; the median is the typical token.
+    for key, pattern in (
+        ("median_kl", r"Median\s+KLD:\s*(-?\d+\.?\d*)"),
+        ("p95_kl", r"95\.0%\s+KLD:\s*(-?\d+\.?\d*)"),
+        ("p99_kl", r"99\.0%\s+KLD:\s*(-?\d+\.?\d*)"),
+        ("p999_kl", r"99\.9%\s+KLD:\s*(-?\d+\.?\d*)"),
+    ):
+        m = re.search(pattern, output)
+        if m:
+            result[key] = float(m.group(1))
+
+    # "Token probability statistics" block (newer llama.cpp builds):
+    #   RMS Δp    :  1.234 ± 0.012 %
+    #   Same top p: 93.712 ± 0.064 %
+    # Percent values, stored as printed. Absent on builds that do not print
+    # the block -- the keys are simply omitted then.
+    for key, pattern in (
+        ("rms_dp", r"RMS\s+(?:Δ|d)p\s*:\s*(-?\d+\.?\d*)\s*(?:\xb1|\+/-)\s*(\d+\.?\d*)\s*%"),
+        ("same_top_p", r"Same top p\s*:\s*(-?\d+\.?\d*)\s*(?:\xb1|\+/-)\s*(\d+\.?\d*)\s*%"),
+    ):
+        m = re.search(pattern, output)
+        if m:
+            result[key] = float(m.group(1))
+            result[f"{key}_err"] = float(m.group(2))
 
     # The evaluated model's own perplexity, from the "Perplexity statistics"
     # block that precedes "KL divergence statistics" -- lets a caller fuse a

@@ -61,12 +61,14 @@ def _discover_models(output_dir: Path) -> list[ModelInfo]:
             print(f"  Warning: could not read {path.name}: {exc}")
             continue
 
-        # Derive quant_type from filename
-        m = _re.search(
+        # Derive quant_type from filename: the LAST label wins. MagicQuant
+        # names a tier "<source stem>-<label>", and a source stem like
+        # "Model-f16" would otherwise make every tier read as F16.
+        found = _re.findall(
             r"\b(Q\d_K_[SM]|Q\d_K|Q\d_\d|IQ\d_\w+|BF16|F16|F32|MXFP4)\b",
             path.name, _re.IGNORECASE,
         )
-        quant_type = m.group(1).upper() if m else "—"
+        quant_type = found[-1].upper() if found else "—"
 
         models.append(ModelInfo(
             path=path,
@@ -83,28 +85,81 @@ def _discover_models(output_dir: Path) -> list[ModelInfo]:
 
 
 def _enrich_ppl(models: list[ModelInfo], output_dir: Path) -> None:
+    """Attach each file's measured PPL, matched by IDENTITY, never by name.
+
+    1. ``generated.json`` (written by ``generate``): the shipped file's own
+       verification PPL, else its tier's measured PPL.
+    2. The GGUF's ``magicquant.group_schemes`` matched to a tier config.
+    3. The BF16/F16 source baseline for a >=14 bpw file.
+
+    A file matching none of these (e.g. another quantizer's Q8_0 dropped in
+    for comparison) gets no PPL: a filename containing "Q8" must not
+    inherit MagicQuant's Q8 tier number.
+    """
     import json
-    results_file = output_dir / "search_results.json"
-    if not results_file.exists():
-        return
-    try:
-        with open(results_file, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return
-    tier_ppl = {
-        tier: float(info["ppl"])
-        for tier, info in data.get("tiered", {}).items()
-        if isinstance(info, dict) and "ppl" in info
-    }
-    baseline = data.get("baseline_ppl")
+    from magicquant.utils.naming import config_key
+
+    def _load(name):
+        try:
+            data = json.loads((output_dir / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    # kl_scores.json (magicquant kl-score): every file measured against one
+    # reference by the same instrument -- the only PPL source that covers
+    # reference files too, so it wins when present.
+    from magicquant.kl_score import load_kl_scores
+    kl = (load_kl_scores(output_dir) or {}).get("files") or {}
     for model in models:
-        for tier, ppl in tier_ppl.items():
-            if tier in model.filename or tier.replace("_", "") in model.filename.replace("_", ""):
-                model.ppl = ppl
-                break
-        if model.ppl is None and baseline and model.bpw >= 14.0:
-            model.ppl = float(baseline)
+        rec = kl.get(model.filename)
+        if isinstance(rec, dict) and not rec.get("error"):
+            if isinstance(rec.get("ppl"), (int, float)):
+                model.ppl = float(rec["ppl"])
+            if isinstance(rec.get("mean_kl"), (int, float)):
+                model.mean_kld = float(rec["mean_kl"])
+
+    data = _load("search_results.json")
+    if not data:
+        return
+    tiered = {t: i for t, i in (data.get("tiered") or {}).items() if isinstance(i, dict)}
+    by_key = {
+        config_key(i["config"]): i.get("ppl")
+        for i in tiered.values() if i.get("config")
+    }
+    generated = (_load("generated.json").get("files") or {})
+    baseline = data.get("baseline_ppl")
+
+    for model in models:
+        if model.ppl is not None:  # already set from kl_scores.json
+            continue
+        ppl = None
+        rec = generated.get(model.filename)
+        if isinstance(rec, dict):
+            ppl = rec.get("verify_ppl")
+            if ppl is None:
+                ppl = (tiered.get(rec.get("tier")) or {}).get("ppl")
+        if ppl is None:
+            ppl = by_key.get(_group_schemes_key(model.path))
+        if ppl is None and baseline and model.bpw >= 14.0:
+            ppl = baseline
+        if isinstance(ppl, (int, float)) and not isinstance(ppl, bool):
+            model.ppl = float(ppl)
+
+
+def _group_schemes_key(path: Path):
+    """config_key of a MagicQuant GGUF's magicquant.group_schemes, or None."""
+    import json
+    from magicquant.gguf.reader import GGUFReader
+    from magicquant.utils.naming import config_key
+
+    try:
+        with GGUFReader(str(path)) as reader:
+            raw = reader.get_metadata().get("magicquant.group_schemes")
+        schemes = json.loads(raw) if isinstance(raw, str) else None
+    except Exception:
+        return None
+    return config_key(schemes) if isinstance(schemes, dict) and schemes else None
 
 
 # ── Question loading & sampling ────────────────────────────────────────────────
@@ -404,7 +459,9 @@ def cmd_compare(args: Namespace) -> None:
         all_results[model.filename] = by_qid
 
         pct = model.total_score / model.total_questions * 100 if model.total_questions else 0
-        print(f"  Score: {model.total_score}/{model.total_questions} ({pct:.0f}%)  "
+        unscored = (f" + {model.unscored_questions} unscored (manual review)"
+                    if model.unscored_questions else "")
+        print(f"  Score: {model.total_score}/{model.total_questions} ({pct:.0f}%){unscored}  "
               f"Consistency: {model.consistency_score:.2f}")
 
     # ── Write outputs ─────────────────────────────────────────────────────────

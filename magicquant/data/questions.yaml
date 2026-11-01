@@ -5,12 +5,23 @@
 #   arithmetic | factual_recall | multilingual | long_context
 #   multi_hop  | code           | proof        | instruction_following
 #
-# scoring_type: exact_numeric | keyphrase | code_syntax | quadratic_roots | none
+# scoring_type: exact_numeric | keyphrase | code_syntax | quadratic_roots | sql_exec | none
 # ground_truth: required when scoring_type != none
 # tolerance:    abs/rel keys, only for exact_numeric / quadratic_roots
 # n_samples:    per-question override (default 1)
 # system_prompt_override: replaces global system prompt for this question only
 # passage_file: path relative to this file's directory; prepended to prompt
+#
+# exact_numeric prompts end by asking for a final "Answer: <number>" line
+# ("Ответ:" in Russian); the scorer reads that line before falling back to
+# the last number in the response.
+# unit: dollars -- answers restated in cents ("5 cents") are read as dollars.
+# response_language: ISO code; REQUIRED for multilingual questions, whose
+# prompts MUST state the expected response language explicitly.
+# The global system prompt is English, so a model that answers a Chinese
+# question correctly in English has followed its instructions; scoring it on
+# a Chinese keyphrase it was never asked for measures language-mirroring, not
+# quantization damage (the F16 reference failed the old Q4 that way).
 
 questions:
 
@@ -29,7 +40,7 @@ questions:
     scoring_type: exact_numeric
     ground_truth: 360
     tolerance: {abs: 0}
-    prompt: "What is 15 × 24? Show your work."
+    prompt: "What is 15 × 24? Show your work. End with a final line of the form: Answer: <number>"
 
   - id: 3
     difficulty: easy
@@ -41,9 +52,10 @@ questions:
   - id: 4
     difficulty: easy
     failure_mode: multilingual
+    response_language: zh
     scoring_type: keyphrase
     ground_truth: "北京"
-    prompt: "中国的首都是哪里？请只回答城市名称。"
+    prompt: "中国的首都是哪里？请用中文回答，只回答城市名称。"
 
   - id: 5
     difficulty: easy
@@ -61,7 +73,7 @@ questions:
     scoring_type: exact_numeric
     ground_truth: 72
     tolerance: {abs: 0}
-    prompt: "A train leaves City A traveling at 60 mph. At the same time, another train leaves City B (which is 120 miles from City A) traveling toward City A at 40 mph. How many minutes after departure do the two trains meet?"
+    prompt: "A train leaves City A traveling at 60 mph. At the same time, another train leaves City B (which is 120 miles from City A) traveling toward City A at 40 mph. How many minutes after departure do the two trains meet? End with a final line of the form: Answer: <number>"
 
   - id: 7
     difficulty: medium
@@ -69,15 +81,16 @@ questions:
     scoring_type: exact_numeric
     ground_truth: 2
     tolerance: {abs: 0}
-    prompt: "What is the remainder when 2^10 is divided by 7? Show your calculation."
+    prompt: "What is the remainder when 2^10 is divided by 7? Show your calculation. End with a final line of the form: Answer: <number>"
 
   - id: 8
     difficulty: medium
     failure_mode: multi_hop
     scoring_type: exact_numeric
+    unit: dollars
     ground_truth: 0.05
     tolerance: {abs: 0.001}
-    prompt: "A bat and a ball together cost $1.10. The bat costs exactly $1.00 more than the ball. How much does the ball cost in dollars? Show your reasoning step by step."
+    prompt: "A bat and a ball together cost $1.10. The bat costs exactly $1.00 more than the ball. How much does the ball cost in dollars? Show your reasoning step by step. End with a final line of the form: Answer: <number> (the amount in dollars)"
 
   - id: 9
     difficulty: medium
@@ -90,17 +103,19 @@ questions:
     difficulty: medium
     failure_mode: arithmetic
     scoring_type: exact_numeric
+    unit: dollars
     ground_truth: 1191.02
     tolerance: {abs: 0.05}
-    prompt: "If you invest $1,000 at 6% annual interest compounded annually, what is the balance after 3 years? Write out the formula and compute the exact value."
+    prompt: "If you invest $1,000 at 6% annual interest compounded annually, what is the balance after 3 years? Write out the formula and compute the exact value, rounded to the cent. End with a final line of the form: Answer: <number>"
 
   - id: 11
     difficulty: medium
     failure_mode: multilingual
+    response_language: ru
     scoring_type: exact_numeric
     ground_truth: 1.6
     tolerance: {abs: 0.05}
-    prompt: "Поезд выехал из города А со скоростью 60 км/ч. Через 2 часа навстречу ему из города Б, находящегося на расстоянии 280 км от города А, выехал второй поезд со скоростью 40 км/ч. Через сколько часов после выезда второго поезда они встретятся? Дайте ответ числом."
+    prompt: "Поезд выехал из города А со скоростью 60 км/ч. Через 2 часа навстречу ему из города Б, находящегося на расстоянии 280 км от города А, выехал второй поезд со скоростью 40 км/ч. Через сколько часов после выезда второго поезда они встретятся? Ответьте на русском языке. Последняя строка ответа должна иметь вид: Ответ: <число>"
 
   - id: 12
     difficulty: medium
@@ -129,9 +144,30 @@ questions:
   - id: 15
     difficulty: hard
     failure_mode: code
-    scoring_type: keyphrase
-    ground_truth: ["SELECT", "MAX"]
-    prompt: "Write a SQL query to find the second-highest salary from a table named Employee with columns (id, name, salary). Your query must return NULL if there is no second-highest salary, and must handle the case where multiple employees share the highest salary."
+    scoring_type: sql_exec
+    # Executed against these tables (in-memory SQLite, sandboxed). The old
+    # keyphrase rubric (SELECT + MAX) passed queries that returned the
+    # HIGHEST salary and failed correct window-function answers.
+    sql_setup: "CREATE TABLE Employee (id INTEGER, name TEXT, salary INTEGER)"
+    ground_truth:
+      - label: distinct salaries
+        rows: [[1, "a", 100], [2, "b", 200], [3, "c", 300]]
+        expected: 200
+      - label: tie at the top
+        rows: [[1, "a", 300], [2, "b", 300], [3, "c", 200]]
+        expected: 200
+      - label: single employee
+        rows: [[1, "a", 100]]
+        expected: null
+      - label: all salaries equal
+        rows: [[1, "a", 300], [2, "b", 300]]
+        expected: null
+      # Headcount differs from salary order: catches "second most COMMON
+      # salary" queries that coincide with the right answer on the cases above.
+      - label: duplicates with uneven counts
+        rows: [[1, "a", 100], [2, "b", 100], [3, "c", 200], [4, "d", 300], [5, "e", 300], [6, "f", 300]]
+        expected: 200
+    prompt: "Write a SQL query to find the second-highest salary from a table named Employee with columns (id, name, salary). Your query must return NULL if there is no second-highest salary, and must handle the case where multiple employees share the highest salary. Give the query in a single ```sql code block."
 
   - id: 16
     difficulty: hard
@@ -157,6 +193,7 @@ questions:
   - id: 19
     difficulty: hard
     failure_mode: multilingual
+    response_language: fa
     scoring_type: keyphrase
     ground_truth: "تهران"
     prompt: "پایتخت ایران چیست؟ و در کدام استان واقع شده است؟ پاسخ خود را به فارسی بنویسید."
@@ -165,6 +202,7 @@ questions:
     difficulty: hard
     failure_mode: long_context
     scoring_type: exact_numeric
+    unit: dollars
     ground_truth: 847
     tolerance: {abs: 2}
     passage_file: "passages/hard_catalog.txt"

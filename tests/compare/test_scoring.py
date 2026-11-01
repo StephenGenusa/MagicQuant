@@ -303,3 +303,106 @@ def test_consistency_majority_pass():
 
 def test_consistency_empty():
     assert compute_consistency([]) == pytest.approx(1.0)
+
+
+
+# ── Declared answers and decimal commas (2026-11-01 scoring review) ─────────
+
+from magicquant.compare.scoring import extract_declared_answer, score_sql_exec  # noqa: E402
+
+
+def test_declared_answer_beats_last_number():
+    q = {"ground_truth": 0.05, "tolerance": {"abs": 0.001}}
+    r = score_exact_numeric("So the ball costs $0.05 or 5 cents.\nAnswer: 0.05", q)
+    assert r.status == "pass"
+
+
+def test_declared_answer_variants():
+    assert extract_declared_answer("**Answer:** $847") == 847
+    assert extract_declared_answer("Ответ: 1,6") == 1.6
+    assert extract_declared_answer("Answer: 1,191.02") == 1191.02
+    assert extract_declared_answer("no declared line, 5") is None
+
+
+def test_last_number_decimal_comma_vs_thousands():
+    assert extract_last_number("итого 11,67 часов") == 11.67
+    assert extract_last_number("total $12,000") == 12000
+    assert extract_last_number("A = $1,191.02") == 1191.02
+
+
+_SQL_Q = {
+    "sql_setup": "CREATE TABLE Employee (id INTEGER, name TEXT, salary INTEGER)",
+    "ground_truth": [
+        {"rows": [[1, "a", 100], [2, "b", 200], [3, "c", 300]], "expected": 200},
+        {"rows": [[1, "a", 300], [2, "b", 300], [3, "c", 200]], "expected": 200},
+        {"rows": [[1, "a", 100]], "expected": None},
+    ],
+}
+
+
+def _sql(query):
+    return f"Here you go:\n```sql\n{query}\n```"
+
+
+def test_sql_exec_correct_query_passes():
+    q = "SELECT MAX(salary) FROM Employee WHERE salary < (SELECT MAX(salary) FROM Employee);"
+    assert score_sql_exec(_sql(q), _SQL_Q).status == "pass"
+
+
+def test_sql_exec_wrong_query_fails_with_case_count():
+    r = score_sql_exec(_sql("SELECT MAX(salary) FROM Employee"), _SQL_Q)
+    assert r.status == "fail" and r.detail.startswith("0/3 cases correct")
+
+
+def test_sql_exec_no_query_fails():
+    assert score_sql_exec("I would use a subquery.", _SQL_Q).status == "fail"
+
+
+def test_sql_exec_rejects_multiple_statements_and_writes():
+    r = score_sql_exec(_sql("DELETE FROM Employee; SELECT 200"), _SQL_Q)
+    assert r.status == "fail" and "Multiple SQL statements" in r.detail
+
+
+def test_sql_exec_cannot_touch_filesystem(tmp_path):
+    target = tmp_path / "evil.db"
+    # ATTACH is the only SQL route to the filesystem; it must be denied.
+    r = score_sql_exec(_sql(f"ATTACH DATABASE '{target}' AS x"), _SQL_Q)
+    assert r.status == "fail" and not target.exists()
+
+
+def test_sql_exec_runaway_query_is_aborted():
+    q = ("WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) "
+         "SELECT MAX(n) FROM r")
+    one_case = dict(_SQL_Q, ground_truth=_SQL_Q["ground_truth"][:1])
+    r = score_sql_exec(_sql(q), one_case)
+    assert r.status == "fail" and "interrupted" in r.detail.lower()
+
+
+def test_dollar_answer_restated_in_cents():
+    q = {"ground_truth": 0.05, "tolerance": {"abs": 0.001}, "unit": "dollars"}
+    assert score_exact_numeric("So, the ball costs $0.05 or 5 cents.", q).status == "pass"
+    assert score_exact_numeric("The ball costs 5 cents.", q).status == "pass"
+    # Without the unit marker, cents are not reinterpreted.
+    q_plain = {"ground_truth": 0.05, "tolerance": {"abs": 0.001}}
+    assert score_exact_numeric("$0.05 or 5 cents.", q_plain).status == "fail"
+
+
+def test_sql_exec_matches_any_column():
+    q = "SELECT salary, DENSE_RANK() OVER (ORDER BY salary DESC) AS rk FROM Employee"
+    wrapped = f"SELECT salary, rk FROM ({q}) WHERE rk = 2"
+    assert score_sql_exec(_sql(wrapped), _SQL_Q).status == "pass"
+
+
+def test_sql_exec_catches_headcount_coincidence():
+    """'Second most common salary' coincides with the right answer unless
+    headcount and salary order disagree."""
+    case = {"rows": [[1, "a", 100], [2, "b", 100], [3, "c", 200],
+                     [4, "d", 300], [5, "e", 300], [6, "f", 300]], "expected": 200}
+    q = dict(_SQL_Q, ground_truth=_SQL_Q["ground_truth"] + [case])
+    headcount = ("SELECT salary, COUNT(*) AS c FROM Employee GROUP BY salary "
+                 "ORDER BY c DESC LIMIT 1 OFFSET 1")
+    r = score_sql_exec(_sql(headcount), q)
+    assert r.status == "fail" and r.detail.startswith("3/4")
+    correct = ("SELECT MAX(salary) FROM Employee "
+               "WHERE salary < (SELECT MAX(salary) FROM Employee)")
+    assert score_sql_exec(_sql(correct), q).status == "pass"

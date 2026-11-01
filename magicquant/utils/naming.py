@@ -68,6 +68,16 @@ _TIER_TO_HF_LABEL = {
 }
 
 
+def hf_label_for_tier(tier: str) -> Optional[str]:
+    """The HF quant label ``generate_name`` puts in a tier's filename
+    (e.g. ``"Q5"`` -> ``"Q5_K_M"``), or None when the tier is not expanded.
+
+    The label names a SIZE BAND, not the schemes inside the file; the model
+    card uses this to disclose that next to each tier.
+    """
+    return _TIER_TO_HF_LABEL.get(tier)
+
+
 def generate_name(
     model_name: str,
     base_quant: str,

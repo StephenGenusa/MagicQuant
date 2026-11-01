@@ -160,6 +160,32 @@ def test_parse_kl_output_extracts_ppl_from_perplexity_statistics_block():
     assert parsed["ppl_err"] == pytest.approx(3.046334)
 
 
+def test_parse_kl_output_extracts_tail_percentiles():
+    """The percentile lines of the real KL block are kept (the model card
+    shows where damage concentrates, which the mean hides)."""
+    parsed = _parse_kl_output(_KL_STDOUT + _KL_STDERR_NOISE)
+    assert parsed["median_kl"] == pytest.approx(-0.000018)
+    assert parsed["p95_kl"] == pytest.approx(-0.000001)
+    assert parsed["p99_kl"] == pytest.approx(0.000000)
+    assert parsed["p999_kl"] == pytest.approx(0.000001)
+    # The fixture's build printed no token-probability block.
+    assert "same_top_p" not in parsed and "rms_dp" not in parsed
+
+
+def test_parse_kl_output_extracts_token_probability_block():
+    block = (
+        "\n====== Token probability statistics ======\n"
+        "Mean    \u0394p: -0.123 \u00b1 0.010 %\n"
+        "RMS \u0394p    :  1.234 \u00b1 0.012 %\n"
+        "Same top p: 93.712 \u00b1 0.064 %\n"
+    )
+    parsed = _parse_kl_output(_KL_STDOUT + block)
+    assert parsed["rms_dp"] == pytest.approx(1.234)
+    assert parsed["rms_dp_err"] == pytest.approx(0.012)
+    assert parsed["same_top_p"] == pytest.approx(93.712)
+    assert parsed["same_top_p_err"] == pytest.approx(0.064)
+
+
 def test_parse_kl_output_returns_none_when_absent():
     assert _parse_kl_output("nothing relevant here") is None
 

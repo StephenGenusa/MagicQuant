@@ -17,7 +17,17 @@ magicquant search model.gguf --rounds 3  # Measured evolutionary search
 magicquant search model.gguf --rounds 0  # Prediction-only (no llama.cpp needed)
 magicquant generate model.gguf --tiers Q4,Q5,Q6  # Generate hybrids
 magicquant qat ./model --config search_results.json --tier Q4 --dataset chat.jsonl --out adapters/  # QAT-LoRA
+magicquant kl-score --output-dir ./output --reference ./output/model-f16.gguf  # PPL+KLD for every GGUF vs one reference
+magicquant compare --output-dir ./output  # side-by-side task validation (llama-cpp-python)
+magicquant card --output-dir ./output --base-model org/Model --license <id>  # HF model card (local; --upload is gated)
 ```
+
+End-to-end order for a comparable set: `search` → `generate --verify` →
+`kl-score` → `compare` → `card`, all in ONE output directory (card and
+compare read each other's files from it). Reference/outside GGUFs dropped in
+for comparison show as "unmatched" on the card, which is correct. For a
+tied-embedding model, build from a llama.cpp-converted GGUF (see Known
+Limitations).
 
 ### Tests
 
@@ -25,7 +35,7 @@ Two virtualenvs on the dev box; NEVER use bare `python`/`pytest` (PATH resolves 
 an unrelated shim without pytest — it exits 0 having run nothing):
 
 ```bash
-.venv/bin/python -m pytest tests/ -q            # main suite (~1270 tests, ~15s)
+.venv/bin/python -m pytest tests/ -q            # main suite (~1490 tests, ~20s)
 .venv/bin/python -m pytest tests/test_writer.py::test_name -q   # single test
 .venv-qat/bin/python -m pytest tests/ -q        # torch env: runs the ~210 QAT tests too
 .venv/bin/ruff check --select F magicquant/ tools/ tests/   # BLOCKING in CI — keep at zero
@@ -220,6 +230,37 @@ GGUFs containing these types load only on the fork, not stock llama.cpp.
   `MAGICQUANT_SKIP_ARCH_CHECK=1` is the escape hatch. The resolved binary is
   persisted (`llamacpp_binary`) and a resume with a different binary is a
   condition mismatch.
+- **`generate` must build with the imatrix the search measured with.** When
+  `search_results.json["measurement"]["imatrix_active"]`, `cmd_generate`
+  enables it or exits; otherwise every imatrix-weighted tier ships as a
+  different file from the measured one. `generate --verify` PPL must equal the
+  measured PPL -- if it doesn't, the files don't match the numbers.
+- **Search groups are presence-checked**, core groups included: a group with no
+  tensors in the model is dropped (strict probes raise on an empty group). A
+  llama.cpp-converted tied-embedding model has no `output.weight`, so no
+  group H; `token_embd` doubles as the head and E's scheme/probe covers it.
+- **The model card never presents an unmeasured number as measured**
+  (`utils/model_card.py`, docs/audits/2026-11-01-model-card-review.md):
+  baseline gated on `baseline_provenance`, a Status per tier, sizes in GiB
+  AND GB (`size_gb` is bytes/1024**3), filename quant labels disclosed as
+  size bands, tiers dominated on size+PPL flagged. It only READS results.
+  `predictor_tracking` is persisted as `{"is_tracking","tau","n_pairs"}`.
+- **compare attributes data by file identity, never filename**: PPL/KLD from
+  `kl_scores.json`, then `generated.json`, then `magicquant.group_schemes`;
+  a filename containing "Q8" must not inherit a tier's numbers. Unscored
+  (manual-review) answers are kept out of every denominator.
+- **compare question rules** (`data/questions.yaml`, schema-tested):
+  multilingual prompts state their response language (`response_language`;
+  the system prompt is English); `exact_numeric` prompts ask for a final
+  `Answer: <number>` line; `unit: dollars` reads "N cents" as dollars; SQL is
+  scored by EXECUTION (`sql_exec`, sandboxed SQLite, any-column match) with a
+  test table that separates the right answer from plausible wrong ones.
+  Verify a new question by re-scoring saved `raw_responses` answers by hand.
+- **KL base logits are huge** (~vocab x scored tokens x 2 bytes: 37 GB for a
+  128k vocab on wikitext-2 at ctx 512). A measured search writes one per run
+  (KL is on by default for probes); `kl-score --base-logits` reuses a file
+  and never deletes one it was given. A reference vs its own logits shows the
+  noise floor (~0.0004 mean KLD), not 0.
 - **LlamaCppTools is lazy** — the orchestrator works without llama.cpp installed
   (prediction-only mode). Tool discovery order (dirs-outer/names-inner in
   `_find_tool_in_dirs`) is load-bearing: a legacy root binary wins over build/bin.
@@ -278,4 +319,14 @@ SafetensorsSource strips `model.language_model.` prefix for multimodal models, t
 - Tokenizer reading only handles BPE (tokenizer.json). SentencePiece (.model) requires protobuf and is not implemented.
 - Multi-part (`-00001-of-N`) GGUF sources are not stitched — merge with
   `llama-gguf-split --merge` first.
+- **Safetensors sources of Llama 3.x / tied models diverge from llama.cpp's
+  converter**: `SafetensorsSource` omits `rope_freqs.weight` (llama3 RoPE
+  factors; 0.015 PPL at ctx 512, matters at long context) and materializes a
+  separate `output.weight` for tied embeddings (+0.49 GiB on Llama-3.2-1B).
+  Building from a llama.cpp-converted GGUF avoids both; MagicQuant's
+  conversion is otherwise numerically identical (verified 2026-11-01:
+  14.0067 vs 14.0067 PPL).
+- The v1 search seeds no Q8_0 incumbent, so its Q8 band can come out
+  dominated by the stock Q6_K mix (Llama-3.2-1B: Q8 KLD 0.0134 vs Q6 0.0066);
+  the card flags such tiers "not recommended".
 - The evolutionary search mostly rediscovers obvious configs (BF16 brain + MXFP4 FFN) for dense models. Its value comes from the measured search loop and MoE models with larger search spaces.

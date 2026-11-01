@@ -970,6 +970,10 @@ class GGUFWriter:
         # row width wasn't block-divisible. Populated during Pass 1 of
         # create_hybrid_gguf; a summary is logged once the write completes.
         self._fallbacks: List[Dict[str, str]] = []
+        # Source types decoded from an already-quantized source (double
+        # quantization); set in _validate_tensor_entries, stamped into the
+        # artifact's metadata by _build_metadata.
+        self._dequant_sources: Dict[str, int] = {}
 
     def create_hybrid_gguf(
         self,
@@ -1130,6 +1134,7 @@ class GGUFWriter:
         # Reset per-call so re-using a writer instance for a second
         # create_hybrid_gguf() call doesn't carry stale entries forward.
         self._fallbacks = []
+        self._dequant_sources = {}
         n_tensor_overrides_applied = 0
 
         for tinfo in all_tensors_info:
@@ -1510,6 +1515,9 @@ class GGUFWriter:
             st = entry["_source_type_name"]
             if entry["_can_decode"] and st not in ("F32", "F16", "BF16"):
                 dequant_sources[st] = dequant_sources.get(st, 0) + 1
+        # Kept for _build_metadata, which stamps it into the artifact
+        # (magicquant.source_precision) so the fact travels with the file.
+        self._dequant_sources = dict(dequant_sources)
         if dequant_sources:
             breakdown = ", ".join(
                 f"{n}x {t}" for t, n in sorted(dequant_sources.items())
@@ -1606,6 +1614,26 @@ class GGUFWriter:
         # carries it -- setdefault so a GGUF-source repack keeps its own
         # value if it already has one.
         self.metadata.setdefault("general.quantization_version", 2)
+
+        # Provenance KVs (2026-11 model-card review, C10/D-b4/D-b5), appended
+        # AFTER every pre-existing key so the established KV order is
+        # untouched. Always written -- an explicit "clean" record is what
+        # lets a reader tell "no double-quant / no fallbacks" from "an older
+        # file that never recorded it".
+        dequant = getattr(self, "_dequant_sources", {}) or {}
+        self.metadata["magicquant.source_precision"] = json.dumps({
+            "dequantized": bool(dequant),
+            "source_types": dict(sorted(dequant.items())),
+        })
+        fallback_summary: Dict[str, Dict[str, object]] = {}
+        for fb in self._fallbacks:
+            reason = fb.get("reason", "unknown")
+            slot = fallback_summary.setdefault(reason, {
+                "count": 0,
+                "example": f"{fb['tensor']}: {fb['requested']}->{fb['actual']}",
+            })
+            slot["count"] += 1
+        self.metadata["magicquant.fallbacks"] = json.dumps(fallback_summary)
 
         filtered_meta = {k: v for k, v in self.metadata.items() if v is not None}
         return filtered_meta

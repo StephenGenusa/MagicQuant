@@ -400,24 +400,42 @@ create_hybrid_gguf(
 
 ### Model Card
 
-`magicquant card` writes a HuggingFace-ready model card summarizing a
-finished search's tier results:
+`magicquant card` writes a HuggingFace-ready model card (`README.md` in the
+output directory) for a finished search:
 
 ```bash
-magicquant card --output-dir ./output --model model-bf16.gguf --base-model org/Model-Name
+magicquant card --output-dir ./output --base-model org/Model-Name --license apache-2.0
 ```
+
+The card reads `search_results.json` and, when present in the same
+directory, the shipped `*.gguf` files, `generated.json`, `v2_results.json`
+and the latest `comparisons/` run. It contains HF front matter, a "which file
+should I pick" guide, a file table with exact sizes and SHA-256 hashes, the
+tier table (status, size in GiB and GB, ΔPPL, KL divergence, speed when
+benchmarked), a group legend, the evaluation conditions, all measured
+candidates, compatibility notes, provenance and caveats. It never presents an
+unmeasured number as measured: a placeholder baseline, a predicted tier or an
+unrecorded condition is labelled as such. Filename quant labels (e.g.
+`Q5_K_M`) are size bands, not recipes, and the card says so.
 
 - `--output-dir` — directory containing `search_results.json` (default `./output`).
 - `--model` — source model path, used to derive the card title.
-- `--base-model` — base model name to show on the card.
+- `--base-model` — base model to show on the card; an `owner/name` repo id is
+  also linked as `base_model` in the front matter.
+- `--license`, `--quantized-by`, `--pipeline-tag` (default `text-generation`),
+  `--language` (repeatable) — front-matter fields. `--no-front-matter` omits it.
+- `--no-hash` — skip the SHA-256 of each GGUF (faster on large files).
 - `--upload` — upload the generated card to HuggingFace (requires
-  `huggingface_hub`, `pip install 'magicquant[hf]'`); needs `--repo`.
+  `huggingface_hub`, `pip install 'magicquant[hf]'`); needs `--repo`. It
+  refuses when the baseline or any tier is unmeasured (override:
+  `--allow-unverified-card`) or when the files are double-quantized
+  (override: `--acknowledge-double-quant`).
 - `--repo` — target HF repo id (`owner/name`) for `--upload`.
 
 ### Compare (side-by-side tier validation)
 
 Run side-by-side inference across every GGUF in an output directory, score the responses automatically, and write an HTML comparison report. This is the practical validation step after `generate` — it shows which quantization tier first starts to fail on tasks that matter, rather than relying solely on perplexity as a quality proxy.
-![](./Screenshot%20from%202026-06-24%2021-44-29.png)
+![](./Screenshot%20from%202026-11-01%2009-30-19.png)
 
 ```bash
 magicquant compare [OPTIONS]
@@ -455,17 +473,28 @@ Questions are stratified: 5 easy, 7 medium, 8 hard. When fewer than 20 questions
 
 | Scoring Type | How It Works |
 |--------------|--------------|
-| `exact_numeric` | Extracts the last number in the response and compares to ground truth with optional tolerance. Reports **near_miss** if within 2× tolerance (or ±5% when tolerance is zero) |
+| `exact_numeric` | Reads the declared final answer line (`Answer: <number>`, `Ответ:` in Russian), which the prompts ask for, falling back to the last number in the response. Handles thousands separators vs decimal commas (`1,191.02` vs `1,6`); questions marked `unit: dollars` read "5 cents" as $0.05. Compares to ground truth with optional tolerance; reports **near_miss** if within 2× tolerance (or ±5% when tolerance is zero) |
 | `quadratic_roots` | Extracts all numbers and fractions, checks both roots are present order-independently within tolerance |
 | `keyphrase` | All required phrases must appear as case-insensitive substrings |
-| `code_syntax` | Extracts fenced Python blocks and validates with `ast.parse` |
+| `code_syntax` | Extracts fenced Python blocks and validates with `ast.parse` (syntax only, not behaviour) |
+| `sql_exec` | Runs the answer's SQL in an in-memory SQLite database against each test table in `ground_truth` (sandboxed: no `ATTACH`, no writes, time-limited); passes when every case returns the expected value in some column |
 | `none` | Open-ended; response preserved for manual review |
 
 Every scored response returns one of four statuses:
 - **pass** — matches ground truth within tolerance
 - **near_miss** — quantization degraded precision but the model "knew" the answer (informational; counted as fail in summary scores)
 - **fail** — wrong or no answer
-- **unscored** — open-ended question (proofs, explanations), manual review required
+- **unscored** — open-ended question (proofs, explanations), manual review required. Unscored questions are kept out of every score denominator; they are not failures.
+
+Multilingual questions state their expected response language in the prompt itself (`response_language` in the YAML): the system prompt is English, so a model that answers a Chinese question correctly in English has followed its instructions.
+
+**KL divergence for every file.** Perplexity on one corpus misses damage that KL divergence catches. `magicquant kl-score` measures PPL and KL divergence (mean, median, p99, p99.9, same-top-token) for every GGUF in the directory against one reference model, with one llama.cpp build on the same corpus and context, and writes `kl_scores.json`. `compare` adds a Mean KLD column from it (and PPL for reference files that have no search results), and `card` lists both for every file:
+
+```bash
+magicquant kl-score --output-dir ./output --reference ./output/model-f16.gguf
+```
+
+The reference logits are large (about vocab × scored tokens × 2 bytes; ~37 GB for a 128k-vocab model on wikitext-2 at ctx 512). They are deleted afterwards unless `--keep-base-logits`; `--base-logits <file>` reuses an existing file and never deletes it. A reference scored against its own logits shows the measurement's noise floor (not exactly 0).
 
 **Output.** Each run writes to `{output-dir}/comparisons/{timestamp}/`:
 
@@ -503,7 +532,7 @@ xdg-open ./output/comparison_latest/comparison.html
 
 **Consistency testing.** With `--n-samples 3 --temperature 0.3`, each question is answered three times. A consistency score (fraction of samples sharing the majority status) is reported alongside the primary answer — useful for detecting models that are "technically correct" on average but unreliable on repeated runs.
 
-**Custom question pools.** Point `--questions-file` at any YAML file matching the built-in schema to test domain-specific tasks — code review, legal reasoning, clinical notes, etc. The schema supports per-question passage files, per-question system-prompt overrides, and all five scoring types.
+**Custom question pools.** Point `--questions-file` at any YAML file matching the built-in schema to test domain-specific tasks — code review, legal reasoning, clinical notes, etc. The schema supports per-question passage files, per-question system-prompt overrides, and all six scoring types.
 
 **GPU acceleration.** Inference runs through `llama-cpp-python` (a core dependency). Each model is loaded once; all questions are answered in a single session, so inference time scales with the number of models rather than the number of questions. Install the CUDA build for models >3B:
 

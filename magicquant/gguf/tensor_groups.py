@@ -37,8 +37,11 @@ class TensorGroupClassifier:
     # Order matters: first match wins. More specific patterns come first.
     GROUP_PATTERNS = {
         'V': [r'model\.visual\.', r'vision_model\.', r'visual\.'],
+        # rope_freqs.weight: llama.cpp's precomputed llama3 RoPE frequency
+        # factors (1-D F32 constant table, e.g. 32 values) -- like the
+        # norms, kept at source precision and never quantized.
         'N': [r'_norm\.weight$', r'layernorm', r'_norm\.bias$',
-              r'q_norm\.weight$', r'k_norm\.weight$'],
+              r'q_norm\.weight$', r'k_norm\.weight$', r'^rope_freqs\.weight$'],
         # per_layer_token_embd: the per-layer (PLE / n-gram) embedding table
         # (gemma-3n, qwen4exp). Row-gathered like token_embd, so group E.
         # Explicit for documentation: the generic pattern already matches it.

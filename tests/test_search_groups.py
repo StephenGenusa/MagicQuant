@@ -61,3 +61,40 @@ def test_default_groups_when_none_passed():
     assert discovered
     for cfg in discovered:
         assert "X" not in cfg["config"]
+
+
+def _detect_groups(monkeypatch, names):
+    import magicquant.gguf.source as source_mod
+    from magicquant.orchestrator import MagicQuantOrchestrator
+
+    class _Src:
+        def get_tensor_names(self):
+            return names
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(source_mod, "open_model_source", lambda *a, **k: _Src())
+    orch = MagicQuantOrchestrator.__new__(MagicQuantOrchestrator)
+    orch.source_model_path = "ignored.gguf"
+    return orch._detect_search_groups()
+
+
+_DENSE_LAYER = [
+    "blk.0.attn_q.weight", "blk.0.attn_k.weight", "blk.0.attn_v.weight",
+    "blk.0.attn_output.weight", "blk.0.ffn_up.weight", "blk.0.ffn_gate.weight",
+    "blk.0.ffn_down.weight", "blk.0.attn_norm.weight",
+]
+
+
+def test_tied_embedding_model_drops_empty_head_group(monkeypatch):
+    """A llama.cpp-converted tied-embedding model (Llama 3.2, small Qwen3)
+    has no output.weight; group H would make the strict probe raise
+    ("contains no tensors classified into that group")."""
+    names = ["rope_freqs.weight", "token_embd.weight", "output_norm.weight"] + _DENSE_LAYER
+    assert _detect_groups(monkeypatch, names) == ["E", "Q", "K", "O", "U", "D"]
+
+
+def test_untied_model_keeps_head_group(monkeypatch):
+    names = ["token_embd.weight", "output.weight", "output_norm.weight"] + _DENSE_LAYER
+    assert _detect_groups(monkeypatch, names) == ["E", "H", "Q", "K", "O", "U", "D"]

@@ -30,6 +30,7 @@ from magicquant.utils.llamacpp import (
     resolve_source_gguf_arch,
 )
 from magicquant.utils.measurement import measurement_eps, predictor_is_tracking
+from magicquant.utils.provenance import run_info as _run_info
 from magicquant.logging import get_logger
 from magicquant.quant.schemes import get_scheme_by_name
 
@@ -1141,6 +1142,9 @@ class MagicQuantOrchestrator:
         # ── Step 3: Initialize predictor ──
         # (_estimate_model_size also populates self._param_counts per group.)
         baseline_size_gb = self._estimate_model_size(self.source_model_path)
+        # Persisted by _save_results (additive top-level key) so the model
+        # card can state each tier's ratio to BF16 and its size band.
+        self._baseline_size_gb = baseline_size_gb
 
         self.predictor = self._build_predictor(calibration_source, baseline_size_gb)
 
@@ -1519,6 +1523,20 @@ class MagicQuantOrchestrator:
             groups.extend(["X", "R"])
         if any(classifier.classify_tensor(t) == "S" for t in tensor_names):
             groups.append("S")
+        # A core group with no tensors in this model cannot be probed or
+        # searched: the strict probe raises ProbeMeasurementError ("contains
+        # no tensors classified into that group"). The real case is H on a
+        # tied-embedding model converted by llama.cpp (Llama 3.2, Qwen3
+        # <=4B, ...): there is no output.weight, and llama.cpp reuses
+        # token_embd as the head, so group E's scheme already covers it.
+        present = {classifier.classify_tensor(t) for t in tensor_names}
+        absent = [g for g in groups if g not in present]
+        if absent and present:
+            log.info(
+                "Dropping groups with no tensors in this model from the search",
+                stage="probing", groups=absent,
+            )
+            groups = [g for g in groups if g in present]
         # This loop drove classify_tensor() one name at a time (not
         # classify_tensors(), which fires the summary automatically) across
         # the full model's tensor_names -- surface the unclassified-tensor
@@ -2519,6 +2537,14 @@ class MagicQuantOrchestrator:
             # bare-__new__ test double with no _llama_tools.
             "llamacpp_binary": self._current_llamacpp_binary(),
             "llamacpp_arch_check": getattr(self, "_llamacpp_arch_check", None),
+            # Additive tail keys (2026-11 model-card review, D-b1/D-b6).
+            # baseline_size_gb: the BF16 size every tier ratio is taken
+            # against (GiB, same unit as size_gb); None when this instance
+            # never estimated it (bare-__new__ test doubles).
+            "baseline_size_gb": getattr(self, "_baseline_size_gb", None),
+            # run_info: which MagicQuant produced this file and how it was
+            # invoked, so a published card can name its provenance.
+            "run_info": _run_info(),
         }
 
         results_path = self.output_dir / "search_results.json"
@@ -2787,6 +2813,9 @@ class MagicQuantOrchestrator:
 
         # (_estimate_model_size also populates self._param_counts per group.)
         baseline_size_gb = self._estimate_model_size(self.source_model_path)
+        # Persisted by _save_results (additive top-level key) so the model
+        # card can state each tier's ratio to BF16 and its size band.
+        self._baseline_size_gb = baseline_size_gb
 
         self.predictor = self._build_predictor(calibration_source, baseline_size_gb)
 
@@ -2839,8 +2868,9 @@ class MagicQuantOrchestrator:
     def generate_hybrid_model(
         self, config: Dict[str, str], model_name: str,
         base_quant: str = "MXFP4_MOE", verify: bool = True,
+        tier: Optional[str] = None,
     ) -> Optional[str]:
-        """Generate a hybrid GGUF model."""
+        """Generate a hybrid GGUF model and record it in generated.json."""
         from magicquant.gguf.writer import create_hybrid_gguf
 
         output_filename = generate_name(model_name, base_quant, config)
@@ -2868,9 +2898,11 @@ class MagicQuantOrchestrator:
             log.error("Generation failed", stage="generate", error=str(exc), exc_info=exc)
             return None
 
+        verify_ppl = None
         if verify and self.baseline_ppl:
             ppl = self.llama_tools.calculate_perplexity(str(output_path))
             if ppl:
+                verify_ppl = ppl
                 loss = (ppl - self.baseline_ppl) / self.baseline_ppl
                 log.info(
                     "Verification complete",
@@ -2879,7 +2911,44 @@ class MagicQuantOrchestrator:
                     loss_pct=round(loss * 100, 2),
                 )
 
+        self._record_generated(output_path, config, tier, verify_ppl)
         return str(output_path)
+
+    def _record_generated(
+        self, output_path: Path, config: Dict[str, str],
+        tier: Optional[str], verify_ppl: Optional[float],
+    ) -> None:
+        """Merge one shipped file's record into ``<output_dir>/generated.json``
+        (2026-11 model-card review, D-b3). A sidecar rather than a new
+        search_results.json field, so no persisted contract moves.
+        Best-effort: the GGUF is already written, so a failed diagnostics
+        write logs and returns rather than raising.
+        """
+        path = self.output_dir / "generated.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        files = data.setdefault("files", {})
+        try:
+            files[output_path.name] = {
+                "tier": tier,
+                "config_key": _naming_config_key(config),
+                "bytes": output_path.stat().st_size,
+                "verify_ppl": verify_ppl,
+                "verify_baseline_ppl": self.baseline_ppl if verify_ppl is not None else None,
+                "baseline_provenance": getattr(self, "baseline_provenance", None),
+            }
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            log.warning(
+                "Could not record generated.json entry (non-fatal)",
+                stage="generate", file=output_path.name, error=str(exc),
+            )
 
     def generate_tiered_models(
         self, tiered: Dict[str, Dict], model_name_prefix: str = "Model",
@@ -2956,7 +3025,7 @@ class MagicQuantOrchestrator:
 
             path = self.generate_hybrid_model(
                 config=config, model_name=name,
-                base_quant=base_quant, verify=verify,
+                base_quant=base_quant, verify=verify, tier=tier,
             )
             if path:
                 generated.append(path)

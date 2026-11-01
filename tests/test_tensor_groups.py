@@ -99,6 +99,14 @@ def test_nextn_norms_stay_out_of_matrix_groups(clf):
     assert clf.classify_tensor("blk.46.nextn.enorm.weight") == "H"
 
 
+def test_llama3_rope_freqs_is_a_norm_class_constant(clf):
+    # llama.cpp's convert_hf_to_gguf emits rope_freqs.weight (1-D F32 llama3
+    # RoPE factors) for every Llama 3.x model. It must classify (N, kept at
+    # source precision) rather than trip the unknown-tensor warning.
+    assert clf.classify_tensor("rope_freqs.weight") == "N"
+    assert clf.classify_tensor("blk.0.rope_freqs.weight") != "N"
+
+
 # ---------------------------------------------------------------------------
 # Unknown-tensor gate (loud-on-unknown)
 # ---------------------------------------------------------------------------
@@ -106,6 +114,7 @@ def test_nextn_norms_stay_out_of_matrix_groups(clf):
 # Known names spanning every explicit-pattern group plus the mtp/ssm regression
 # names above -- none of these may ever be flagged unclassified.
 _KNOWN_ARCH_NAMES = [
+    "rope_freqs.weight",
     "token_embd.weight",
     "output.weight",
     "blk.0.attn_q.weight",
