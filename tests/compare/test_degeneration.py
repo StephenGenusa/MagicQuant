@@ -97,9 +97,38 @@ def test_flags_counted_including_unscored_answers(tmp_path):
 def test_reports_explain_and_show_flags(tmp_path):
     _, html, md = _report(tmp_path)
     assert "How to read this" in html and "<b>Flagged</b>" in html
+    # The "why" paragraph, with this run's own example (first flagged answer).
+    example = ("In this run, `m.gguf` produced a repetition loop on Q1 "
+               "(multilingual), an answer scored fail. 1 more flagged answer(s)")
+    assert "Why this comparison exists." in md and example in md
+    assert "<code>m.gguf</code> produced a repetition loop on Q1" in html
+    assert "**Numerical answers** are the most sensitive canary" in md
     assert html.count("⚠ repetition loop") == 2
     assert "<th>Flagged</th>" in html
     assert "**How to read this**" in md
     assert "| Mean KLD | Flagged | Score |" in md
     assert "### Flagged answers" in md
     assert "| m.gguf | Q2 | proof | unscored | repetition loop |" in md
+
+
+
+def test_why_paragraph_omits_example_without_flags(tmp_path):
+    from magicquant.compare.output import _why_paragraph
+
+    text = _why_paragraph([], [], {})
+    assert text.startswith("**Why this comparison exists.**")
+    assert "In this run" not in text
+    assert text.endswith("the kinds of questions you care about.")
+
+
+def test_why_paragraph_unscored_example():
+    from magicquant.compare.output import _why_paragraph
+
+    model = ModelInfo(path=Path("q4.gguf"), filename="q4.gguf", bpw=5.0,
+                      quant_type="Q4_K_M", param_count=1, architecture="llama",
+                      size_gb=1.0)
+    q = {"id": 16, "failure_mode": "proof"}
+    r = InferenceResult([_LOOP], [], 1.0, "unscored", _LOOP, flags=["loop"])
+    text = _why_paragraph([model], [q], {"q4.gguf": {16: r}})
+    assert ("In this run, `q4.gguf` produced a repetition loop on Q16 (proof), "
+            "an answer the score does not count.") in text

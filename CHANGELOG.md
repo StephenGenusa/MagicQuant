@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added (2026-11-01 — fork: compare report says why it exists)
+
+- **The report now opens with "Why this comparison exists."** Perplexity and
+  KL divergence measure average drift from the original; the side-by-side
+  answers show what that drift does to real answers (wrong numerical answers,
+  the wrong language, broken code, loops). The paragraph ends by saying how
+  the two work together: KL to rank close files, this page to check the pick.
+  When the run has a flagged answer, a sentence generated from the data cites
+  it, e.g. "In this run, `…Q4_K_M.gguf` produced a repetition loop on Q16
+  (proof), an answer the score does not count."
+- **New first bullet in "How to read this":** numerical answers are the most
+  sensitive canary, because models produce numbers by learned prediction,
+  not exact calculation.
+- **README Compare section** gains the same one-sentence rationale.
+- **Comparison screenshot refreshed.**
+- (2026-11-01; files: magicquant/compare/output.py, README.md,
+  tests/compare/test_degeneration.py, CHANGELOG.md; verified: full suite
+  passed, `ruff check --select F` clean, report regenerated and inspected.)
+
 ### Added (2026-11-01 — fork: compare flags degenerate answers, "How to read this")
 
 - **Degenerate answers are flagged.** New `magicquant/compare/degeneration.py`

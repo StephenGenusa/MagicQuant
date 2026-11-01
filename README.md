@@ -435,7 +435,10 @@ unrecorded condition is labelled as such. Filename quant labels (e.g.
 ### Compare (side-by-side tier validation)
 
 Run side-by-side inference across every GGUF in an output directory, score the responses automatically, and write an HTML comparison report. This is the practical validation step after `generate` — it shows which quantization tier first starts to fail on tasks that matter, rather than relying solely on perplexity as a quality proxy.
-![](./Screenshot%20from%202026-11-01%2009-48-49.png)
+
+Perplexity and KL divergence measure how much a file differs from the original on average; this report shows whether that difference matters, by putting real answers side by side and flagging the ones that degenerate.
+
+![](./Screenshot%20from%202026-11-01%2010-01-54.png)
 
 ```bash
 magicquant compare [OPTIONS]

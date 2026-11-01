@@ -62,11 +62,55 @@ def _pct_color(passes: int, total: int) -> str:
     return "partial"
 
 
+def _why_paragraph(models: list, questions: list, results: dict) -> str:
+    """Why the side-by-side comparison exists, with this run's own example
+    of a failure the averages and the score miss (when there is one)."""
+    from magicquant.compare.degeneration import FLAG_LABELS
+
+    text = (
+        "**Why this comparison exists.** Perplexity and KL divergence tell you "
+        "how far a quantized file has drifted from the original, averaged over "
+        "hundreds of thousands of tokens. They can't tell you what that drift "
+        "does to an actual answer. This page puts each file's real answers to "
+        "the same questions side by side, so you can see where a quant starts "
+        "to break: wrong numerical answers, a question answered in the wrong "
+        "language, code that stops working, or an answer that collapses into a "
+        "loop. A file can look nearly lossless on the averages and still fail "
+        "one of these."
+    )
+    flagged = [
+        (m.filename, q, r)
+        for m in models
+        for q in questions
+        for r in [results.get(m.filename, {}).get(q["id"])]
+        if r is not None and r.flags
+    ]
+    if flagged:
+        name, q, r = flagged[0]
+        label = FLAG_LABELS.get(r.flags[0], r.flags[0])
+        article = "an" if label[0] in "aeiou" else "a"
+        counted = ("an answer the score does not count"
+                   if r.primary_status == "unscored"
+                   else f"an answer scored {r.primary_status.replace('_', ' ')}")
+        text += (f" In this run, `{name}` produced {article} {label} on "
+                 f"Q{q['id']} ({q.get('failure_mode', '')}), {counted}.")
+        if len(flagged) > 1:
+            text += f" {len(flagged) - 1} more flagged answer(s) are marked below."
+    text += (" Use KL divergence to rank files that are close, and this page to "
+             "check that the one you pick still answers the kinds of questions "
+             "you care about.")
+    return text
+
+
 def _how_to_read_points(models: list) -> list:
     """Plain-text explanation shown under the run header (HTML and Markdown)."""
     scored = max((m.total_questions for m in models), default=0)
     step = f"about {100 / scored:.0f} points" if scored else "a large step"
     points = [
+        "**Numerical answers** are the most sensitive canary. Models produce "
+        "numbers by learned prediction, not exact calculation, so a small "
+        "shift in predictions that leaves prose readable turns a digit wrong. "
+        "The arithmetic column often falls first.",
         f"**Score** counts automatically scored questions only ({scored} here). "
         f"Open-ended answers (proofs, explanations) are left for you to judge "
         f"and are not counted as failures; near misses count as fails. One "
@@ -89,14 +133,21 @@ def _how_to_read_points(models: list) -> list:
     return points
 
 
-def _how_to_read_html(models: list) -> str:
+def _md_inline_to_html(text: str) -> str:
+    """Escape, then render the **bold** and `code` spans used in the texts above."""
     import re as _re
 
-    items = "".join(
-        "<li>" + _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html_module.escape(pt)) + "</li>"
-        for pt in _how_to_read_points(models)
-    )
-    return f"<div class='how-to-read'><b>How to read this</b><ul>{items}</ul></div>"
+    out = html_module.escape(text)
+    out = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", out)
+    return _re.sub(r"`(.+?)`", r"<code>\1</code>", out)
+
+
+def _how_to_read_html(models: list, questions: list, results: dict) -> str:
+    why = _md_inline_to_html(_why_paragraph(models, questions, results))
+    items = "".join(f"<li>{_md_inline_to_html(pt)}</li>"
+                    for pt in _how_to_read_points(models))
+    return (f"<div class='how-to-read'><p class='why'>{why}</p>"
+            f"<b>How to read this</b><ul>{items}</ul></div>")
 
 
 def _flag_badges_html(flags: list) -> str:
@@ -235,6 +286,7 @@ td.neutral { color: #888; }
                margin-bottom: 16px; font-size: 12px; color: #444;
                box-shadow: 0 1px 3px rgba(0,0,0,.08); line-height: 1.6; }
 .how-to-read ul { margin: 4px 0 0 18px; }
+.how-to-read .why { margin-bottom: 8px; font-size: 13px; color: #1a1a2e; }
 .flag-badge { display: inline-block; margin: 2px 0 4px; padding: 2px 8px;
               border-radius: 4px; background: #721c24; color: #fff;
               font-size: 11px; font-weight: 600; }
@@ -453,7 +505,7 @@ def generate_html(
         f"</details>"
     )
 
-    how_to_read = _how_to_read_html(models)
+    how_to_read = _how_to_read_html(models, questions, results)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -523,6 +575,8 @@ def generate_markdown(
         "",
     ]
 
+    lines.append(_why_paragraph(models, questions, results))
+    lines.append("")
     lines.append("**How to read this**")
     lines.append("")
     lines += [f"- {pt}" for pt in _how_to_read_points(models)]
